@@ -150,6 +150,7 @@ jobs:
           gh release create v1.0.15-rc.1 build/candidate/PocketGemma-1.0.15.ipa build/candidate/PocketGemma-1.0.15.ipa.sha256 \
             build/candidate/evidence/summary.json build/candidate/evidence/runtime-build.json \
             build/candidate/evidence/memory-stability.json \
+            build/candidate/evidence/configuration-matrix.json build/candidate/evidence/isolated-probes.json \
             build/candidate/native/PocketGemma-NativeRuntime.zip \
             --target "$GITHUB_SHA" --title 'Pocket Gemma 1.0.15 RC1 — 画像推論の修正候補' \
             --notes-file docs/UPDATE-1.0.15-RC.md --prerelease
