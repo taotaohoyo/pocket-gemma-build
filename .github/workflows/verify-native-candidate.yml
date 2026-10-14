@@ -5,6 +5,9 @@ on:
       native_run_id:
         description: Successful pinned native LM rebuild run ID
         required: true
+      reuse_core_run:
+        description: Optional prior core-ui run; exact app and validator sources must match
+        required: false
       publish_candidate:
         description: Publish a separate prerelease after every validation passes
         type: boolean
@@ -26,17 +29,51 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
       - run: unzip -o NativeRuntime-source.zip
+      - name: Verify prior core and UI evidence against identical inputs
+        if: ${{ inputs.reuse_core_run != '' }}
+        env:
+          REUSE_CORE_RUN: ${{ inputs.reuse_core_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, io, json, os, pathlib, urllib.request, zipfile
+          run=os.environ['REUSE_CORE_RUN']
+          assert run.isdecimal(), 'Run ID must be numeric'
+          base='https://api.github.com/repos/taotaohoyo/pocket-gemma-build/'
+          def get(url):
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'PocketGemma-core-evidence'})
+              with urllib.request.urlopen(req,timeout=60) as r:return r.read()
+          prior=json.loads(get(base+'actions/runs/'+run))
+          assert prior['path']=='.github/workflows/verify-native-candidate.yml'
+          jobs=json.loads(get(base+'actions/runs/'+run+'/jobs'))['jobs']
+          core=[j for j in jobs if j['name']=='core-ui']
+          assert len(core)==1 and core[0]['conclusion']=='success', 'Prior core/UI job did not pass'
+          raw='https://raw.githubusercontent.com/taotaohoyo/pocket-gemma-build/'+prior['head_sha']+'/'
+          old_app=get(raw+'PocketGemma-source.zip')
+          assert hashlib.sha256(old_app).digest()==hashlib.sha256(pathlib.Path('PocketGemma-source.zip').read_bytes()).digest(), 'App/preview/core input changed; rerun UI'
+          old_native=get(raw+'NativeRuntime-source.zip')
+          with zipfile.ZipFile(io.BytesIO(old_native)) as old, zipfile.ZipFile('NativeRuntime-source.zip') as new:
+              for name in ['NativeRuntime/native_artifact.py','NativeRuntime/test_native_artifact.py','NativeRuntime/upstream-lock.json']:
+                  assert old.read(name)==new.read(name), 'Native validator input changed; rerun checks'
+          print('Reused completed core/UI evidence:',run,core[0]['html_url'])
+          print('Identical app ZIP SHA256:',hashlib.sha256(old_app).hexdigest())
+          PY
       - run: brew install xcodegen
+        if: ${{ inputs.reuse_core_run == '' }}
       - name: Core settings, privacy, cache and history regression tests
+        if: ${{ inputs.reuse_core_run == '' }}
         run: swift test --package-path Packages/PocketCore
       - name: IPA package integrity regression tests
+        if: ${{ inputs.reuse_core_run == '' }}
         run: python3 scripts/test-ipa-check.py
       - name: Native packaging and failure-propagation regression tests
+        if: ${{ inputs.reuse_core_run == '' }}
         run: python3 NativeRuntime/test_native_artifact.py
       - name: UI and animation regression tests
+        if: ${{ inputs.reuse_core_run == '' }}
         run: bash scripts/check-ui.sh
       - name: Preserve UI evidence
-        if: always()
+        if: ${{ always() && inputs.reuse_core_run == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: PocketGemma-Candidate-UI
