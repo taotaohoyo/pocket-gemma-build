@@ -2,9 +2,14 @@ name: Build iPhone app
 
 on:
   workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful pinned native LM rebuild run ID
+        required: true
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: pocket-gemma-ios
@@ -12,14 +17,32 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 45
+    runs-on: macos-26
+    timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out source
         uses: actions/checkout@v4
       - name: Unpack source bundle when uploaded from Windows
         if: ${{ hashFiles('PocketGemma-source.zip') != '' }}
         run: unzip -o PocketGemma-source.zip
+      - name: Unpack reviewed native runtime source
+        run: unzip -o NativeRuntime-source.zip
+      - name: Unpack semantic image tests
+        run: unzip -o NativeVision-source.zip
+      - name: Download the patched vision runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Rebuilt-NativeRuntime
+          run-id: ${{ inputs.native_run_id }}
+          github-token: ${{ github.token }}
+          path: build/native-artifact
+      - name: Verify and configure the required vision runtime
+        run: |
+          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+          python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - name: Show toolchain
         run: bash scripts/select-xcode.sh
       - name: Test persistence, context and model verification
@@ -40,7 +63,9 @@ jobs:
           path: build/UI
           retention-days: 1
           if-no-files-found: ignore
-      - name: Build unsigned iPhone app
+      - name: Validate actual E2B and E4B semantic inference
+        run: bash scripts/check-native-vision.sh
+      - name: Build Release IPA after semantic inference validation
         run: bash scripts/build-ios.sh
       - name: Save app for AltStore
         uses: actions/upload-artifact@v4

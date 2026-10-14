@@ -5,7 +5,10 @@ on:
       native_run_id:
         description: Successful pinned native LM rebuild run ID
         required: true
-        default: '38555665795'
+      publish_candidate:
+        description: Publish a separate prerelease after every validation passes
+        type: boolean
+        default: true
 permissions:
   contents: read
   actions: read
@@ -14,16 +17,22 @@ concurrency:
   cancel-in-progress: false
 jobs:
   core-ui:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
+      - run: unzip -o NativeRuntime-source.zip
       - run: brew install xcodegen
       - name: Core settings, privacy, cache and history regression tests
         run: swift test --package-path Packages/PocketCore
       - name: IPA package integrity regression tests
         run: python3 scripts/test-ipa-check.py
+      - name: Native packaging and failure-propagation regression tests
+        run: python3 NativeRuntime/test_native_artifact.py
       - name: UI and animation regression tests
         run: bash scripts/check-ui.sh
       - name: Preserve UI evidence
@@ -35,12 +44,16 @@ jobs:
           retention-days: 3
   native-and-ipa:
     needs: core-ui
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
       - run: unzip -o NativeVision-source.zip
+      - run: unzip -o NativeRuntime-source.zip
       - name: Wait for the selected native build to finish
         env:
           NATIVE_RUNTIME_RUN: ${{ inputs.native_run_id }}
@@ -58,6 +71,11 @@ jobs:
               print('Native rebuild:',result['status'],result['conclusion'],flush=True)
               if result['status']=='completed':
                   assert result['conclusion']=='success', 'Native build failed; do not create an IPA'
+                  artifacts_url=f'https://api.github.com/repos/taotaohoyo/pocket-gemma-build/actions/runs/{run}/artifacts'
+                  req=urllib.request.Request(artifacts_url,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'PocketGemma-native-verification'})
+                  with urllib.request.urlopen(req,timeout=30) as r: artifacts=json.load(r)['artifacts']
+                  actual=[a for a in artifacts if a['name']=='PocketGemma-Rebuilt-NativeRuntime' and not a['expired']]
+                  assert len(actual)==1 and actual[0]['size_in_bytes']>100000, 'Native runtime artifact missing or log-only'
                   break
               time.sleep(60)
           else: raise SystemExit('Native build not finished; do not create an IPA')
@@ -69,7 +87,9 @@ jobs:
           github-token: ${{ github.token }}
           path: build/native-artifact
       - name: Verify native artifact and prepare local Swift package
-        run: python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
+        run: |
+          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+          python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - run: brew install xcodegen
       - name: Real E2B and E4B JPEG, text, recovery and memory tests
         run: bash scripts/check-native-vision.sh
@@ -90,4 +110,46 @@ jobs:
           name: PocketGemma-Candidate-AltStore
           path: build/PocketGemma-unsigned.ipa
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
+  publish-candidate:
+    if: ${{ inputs.publish_candidate }}
+    needs: native-and-ipa
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o PocketGemma-source.zip
+      - run: unzip -o NativeRuntime-source.zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Candidate-AltStore
+          path: build/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Candidate-Native-Evidence
+          path: build/candidate/evidence
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Rebuilt-NativeRuntime
+          run-id: ${{ inputs.native_run_id }}
+          github-token: ${{ github.token }}
+          path: build/candidate/native
+      - name: Recheck IPA and publish a separate prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check-ipa.py build/candidate/PocketGemma-unsigned.ipa
+          python3 NativeRuntime/native_artifact.py zip build/candidate/native/PocketGemma-NativeRuntime.zip
+          cp build/candidate/PocketGemma-unsigned.ipa build/candidate/PocketGemma-1.0.15.ipa
+          (cd build/candidate && sha256sum PocketGemma-1.0.15.ipa > PocketGemma-1.0.15.ipa.sha256)
+          gh release create v1.0.15-rc.1 build/candidate/PocketGemma-1.0.15.ipa build/candidate/PocketGemma-1.0.15.ipa.sha256 \
+            build/candidate/evidence/summary.json build/candidate/evidence/runtime-build.json \
+            build/candidate/evidence/memory-stability.json \
+            build/candidate/native/PocketGemma-NativeRuntime.zip \
+            --target "$GITHUB_SHA" --title 'Pocket Gemma 1.0.15 RC1 — 画像推論の修正候補' \
+            --notes-file docs/UPDATE-1.0.15-RC.md --prerelease
