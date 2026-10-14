@@ -10,21 +10,43 @@ jobs:
   native-runtime:
     runs-on: macos-15
     timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
       - run: unzip -o NativeRuntime-source.zip
-      - run: brew install bazelisk
+      - run: brew install bazelisk git-lfs
+      - name: Verify failure detection and native archive validation
+        run: python3 NativeRuntime/test_native_artifact.py
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/pg-gemma-bazel
+            ~/Library/Caches/pg-gemma-bazel-repos
+          key: pg-native-0180-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('NativeRuntime/vision-runtime.patch', 'NativeRuntime/upstream-lock.json', 'NativeRuntime/build.sh') }}
+          restore-keys: pg-native-0180-${{ runner.os }}-${{ runner.arch }}-
       - name: Rebuild pinned LM layer against official LiteRT C runtime
-        run: bash NativeRuntime/build.sh 2>&1 | tee native-rebuild.log
-      - name: Preserve native build output
-        if: always()
+        run: |
+          set -euo pipefail
+          bash NativeRuntime/build.sh 2>&1 | tee native-rebuild.log
+      - name: Verify all six packaged native binaries
+        run: python3 NativeRuntime/native_artifact.py zip build/NativeRuntime/PocketGemma-NativeRuntime.zip
+      - name: Preserve verified runtime only
         uses: actions/upload-artifact@v4
         with:
           name: PocketGemma-Rebuilt-NativeRuntime
           path: |
             build/NativeRuntime/PocketGemma-NativeRuntime.zip
-            build/NativeRuntime/Artifacts/native-runtime-build.json
-            native-rebuild.log
+            build/NativeRuntime/PocketGemma-NativeRuntime.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve native build log separately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-NativeRuntime-Build-Log
+          path: native-rebuild.log
           if-no-files-found: warn
           retention-days: 3
