@@ -2,9 +2,15 @@ name: Build iPhone app
 
 on:
   workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful pinned native LM rebuild run ID
+        required: true
+        default: '38555665795'
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: pocket-gemma-ios
@@ -20,6 +26,17 @@ jobs:
       - name: Unpack source bundle when uploaded from Windows
         if: ${{ hashFiles('PocketGemma-source.zip') != '' }}
         run: unzip -o PocketGemma-source.zip
+      - name: Unpack reviewed native runtime source
+        run: unzip -o NativeRuntime-source.zip
+      - name: Download the patched vision runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Rebuilt-NativeRuntime
+          run-id: ${{ inputs.native_run_id }}
+          github-token: ${{ github.token }}
+          path: build/native-artifact
+      - name: Verify and configure the required vision runtime
+        run: python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - name: Show toolchain
         run: bash scripts/select-xcode.sh
       - name: Test persistence, context and model verification
