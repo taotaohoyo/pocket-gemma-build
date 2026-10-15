@@ -9,11 +9,12 @@ on:
         description: Explicit bounded probe; use images only after text smoke passes
         type: choice
         options:
+          - ui-ux-regression
           - text
           - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
-        default: text
+        default: ui-ux-regression
 permissions:
   contents: read
   actions: read

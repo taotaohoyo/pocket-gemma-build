@@ -1,0 +1,43 @@
+name: Check candidate chat UX and attachment safety
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ui-check:
+    runs-on: macos-26
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o PocketGemma-source.zip
+      - name: Verify core attachment, history and motion policies
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          mkdir -p build/UI
+          swift test --package-path Packages/PocketCore 2>&1 | tee build/UI/core.log
+      - run: brew install xcodegen
+      - name: Test focused native UI interactions
+        timeout-minutes: 19
+        env:
+          UI_FOCUSED_ONLY: '1'
+        run: |
+          set -euo pipefail
+          bash scripts/check-ui.sh 2>&1 | tee build/UI/uitests.log
+      - name: Preserve UI results, screenshots and recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UIUX-Candidate-Checks
+          path: |
+            build/UI/*.log
+            build/UI/*.json
+            build/UI/*.png
+            build/UI/*.mp4
+            build/UI/attachments
+            build/UI/Preview.xcresult
+          retention-days: 7
+          if-no-files-found: error
