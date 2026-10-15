@@ -5,6 +5,14 @@ on:
       native_run_id:
         description: Successful native runtime build ID
         required: true
+      probe:
+        description: Explicit bounded probe; use images only after text smoke passes
+        type: choice
+        options:
+          - text
+          - images-xnnpack
+          - images-builtin
+        default: text
 permissions:
   contents: read
   actions: read
@@ -34,9 +42,10 @@ jobs:
         run: |
           python3 scripts/test-native-watchdog.py
           bash -n scripts/check-native-vision.sh
-      - name: One bare SDK text smoke, no native log redirection
+      - name: Bounded native SDK probe
         env:
           NATIVE_SMOKE_ONLY: '1'
+          NATIVE_PROBE: ${{ inputs.probe }}
         run: bash scripts/check-native-vision.sh
       - name: Preserve activity, fatal native messages and crash reports
         if: always()
