@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - text
+          - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
         default: text
