@@ -32,6 +32,12 @@ jobs:
       - run: unzip -o PocketGemma-source.zip
       - run: unzip -o NativeVision-source.zip
       - run: unzip -o NativeRuntime-source.zip
+      - name: Test core diagnostics, history and animation policies
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          mkdir -p build/NativeVision
+          swift test --package-path Packages/PocketCore 2>&1 | tee build/NativeVision/core-tests.log
       - uses: actions/download-artifact@v4
         with:
           name: PocketGemma-Rebuilt-NativeRuntime
