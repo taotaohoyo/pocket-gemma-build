@@ -19,7 +19,10 @@ permissions:
 jobs:
   sdk-smoke:
     runs-on: macos-26
-    timeout-minutes: 18
+    # The measured text run needed ~13 minutes for Simulator/build/model setup.
+    # Allow the existing 10-minute image watchdog to finish and upload evidence.
+    # This changes no inference timeout and starts no full image suite.
+    timeout-minutes: 28
     defaults:
       run:
         shell: bash
