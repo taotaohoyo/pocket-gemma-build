@@ -1,0 +1,51 @@
+name: Check runtime initialization with bounded SDK smoke
+on:
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful native runtime build ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  sdk-smoke:
+    runs-on: macos-26
+    timeout-minutes: 18
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o PocketGemma-source.zip
+      - run: unzip -o NativeVision-source.zip
+      - run: unzip -o NativeRuntime-source.zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-Rebuilt-NativeRuntime
+          run-id: ${{ inputs.native_run_id }}
+          github-token: ${{ github.token }}
+          path: build/native-artifact
+      - run: python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+      - run: python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
+      - run: brew install xcodegen
+      - name: Verify watchdog and shell syntax
+        timeout-minutes: 2
+        run: |
+          python3 scripts/test-native-watchdog.py
+          bash -n scripts/check-native-vision.sh
+      - name: One bare SDK text smoke, no native log redirection
+        env:
+          NATIVE_SMOKE_ONLY: '1'
+        run: bash scripts/check-native-vision.sh
+      - name: Preserve activity, fatal native messages and crash reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-Bounded-SDK-Smoke
+          path: |
+            build/NativeVision/*.json
+            build/NativeVision/*.jsonl
+            build/NativeVision/*.log
+            build/NativeVision/*.stack.txt
+          retention-days: 7
