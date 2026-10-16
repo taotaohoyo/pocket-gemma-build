@@ -12,7 +12,7 @@ permissions:
 jobs:
   ui-check:
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -27,7 +27,9 @@ jobs:
           swift test --package-path Packages/PocketCore 2>&1 | tee build/UI/core.log
       - run: brew install xcodegen
       - name: Test focused native UI interactions
-        timeout-minutes: 19
+        # Separate boot480s, compile420s and tests600s watchdogs plus cleanup.
+        # The previous19-minute step could kill tests before their own bound.
+        timeout-minutes: 26
         env:
           UI_FOCUSED_ONLY: '1'
           UI_AX_GUIDE_ONLY: ${{ inputs.scope == 'access-guide' && '1' || '0' }}
@@ -43,6 +45,7 @@ jobs:
             build/UI/*.log
             build/UI/*.json
             build/UI/*.jsonl
+            build/UI/*.stack.txt
             build/UI/*.png
             build/UI/*.mp4
             build/UI/attachments
