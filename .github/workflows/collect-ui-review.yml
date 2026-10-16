@@ -51,12 +51,13 @@ jobs:
           with Path('full-evidence.zip').open('rb') as src:
             n=0
             while data:=src.read(60000000):
-              assert n<8,'Unexpectedly large evidence; preserve original artifact'
+              assert n<16,'Unexpectedly large evidence; preserve original artifact'
               (parts/f'part-{n}.bin').write_bytes(data);n+=1
           (out/'full-evidence.json').write_text(json.dumps({'parts':n,'bytes':Path('full-evidence.zip').stat().st_size,'sha256':hashlib.sha256(Path('full-evidence.zip').read_bytes()).hexdigest()},indent=2)+'\n')
           print('Review ZIP bytes:',(out/'logs-and-screenshots.zip').stat().st_size,'full evidence parts:',n)
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: PocketGemma-UI-Light-Review
           path: review
