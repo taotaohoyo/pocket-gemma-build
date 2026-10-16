@@ -17,6 +17,15 @@
       "category": "utilities",
       "versions": [
         {
+          "version": "1.0.21",
+          "buildVersion": "22",
+          "date": "2026-10-16T20:14:30+00:00",
+          "localizedDescription": "＋ボタンのLiquid Glassアニメーションを作り直しました。ボタンのガラスがそのままメニューの形へ変形し、閉じると逆にたどって丸に戻ります。視差効果を減らす設定では短いフェードになります。会話一覧・UI改善（1.0.15〜1.0.20）を含みます。E4Bの画像・ファイル添付は調整中としてロック、E2Bの画像認識とテキスト会話は維持。推論処理と同梱ランタイムは変更していません。iPhone実機での動作は未確認です。iOS 26.4以降。",
+          "downloadURL": "https://github.com/taotaohoyo/pocket-gemma-build/releases/download/v1.0.21/PocketGemma-1.0.21.ipa",
+          "size": 32371260,
+          "minOSVersion": "26.4"
+        },
+        {
           "version": "1.0.14",
           "buildVersion": "15",
           "date": "2026-10-14T10:13:38+00:00",
