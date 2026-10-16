@@ -1,6 +1,12 @@
 name: Check candidate chat UX and attachment safety
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Focused suite or corrected accessibility guide only
+        type: choice
+        default: focused
+        options: [focused, access-guide]
 permissions:
   contents: read
 jobs:
@@ -24,6 +30,7 @@ jobs:
         timeout-minutes: 19
         env:
           UI_FOCUSED_ONLY: '1'
+          UI_AX_GUIDE_ONLY: ${{ inputs.scope == 'access-guide' && '1' || '0' }}
         run: |
           set -euo pipefail
           bash scripts/check-ui.sh 2>&1 | tee build/UI/uitests.log
