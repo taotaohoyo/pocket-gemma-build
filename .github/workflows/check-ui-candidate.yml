@@ -49,3 +49,19 @@ jobs:
             build/UI/Preview.xcresult
           retention-days: 7
           if-no-files-found: error
+      - name: Preserve small review logs separately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-ReviewLogs
+          path: |
+            build/UI/focused-tests.log
+            build/UI/compile.log
+            build/UI/boot.log
+            build/UI/core.log
+            build/UI/*.json
+            build/UI/*.jsonl
+            build/UI/failure.png
+            build/UI/attachments/manifest.json
+          retention-days: 7
+          if-no-files-found: ignore

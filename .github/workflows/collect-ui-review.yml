@@ -1,0 +1,119 @@
+name: Preserve lightweight UI review and bounded evidence parts
+on:
+  workflow_dispatch:
+    inputs:
+      ui_run_id:
+        description: Completed candidate UI run ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Validate the source run
+        env:
+          RUN_ID: ${{ inputs.ui_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os,json,urllib.request
+          run=os.environ['RUN_ID'];assert run.isdecimal()
+          req=urllib.request.Request(f'https://api.github.com/repos/taotaohoyo/pocket-gemma-build/actions/runs/{run}',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'PocketGemma-evidence'})
+          with urllib.request.urlopen(req,timeout=30) as r:d=json.load(r)
+          assert d['path']=='.github/workflows/check-ui-candidate.yml' and d['status']=='completed'
+          print('Preserving completed UI run',run,'with result',d['conclusion'])
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-UIUX-Candidate-Checks
+          run-id: ${{ inputs.ui_run_id }}
+          github-token: ${{ github.token }}
+          path: evidence
+      - name: Separate logs and screenshots from the full evidence
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile,hashlib,json
+          root=Path('evidence');out=Path('review');out.mkdir();parts=Path('parts');parts.mkdir()
+          inventory=[]
+          with zipfile.ZipFile(out/'logs-and-screenshots.zip','w',zipfile.ZIP_DEFLATED) as review,zipfile.ZipFile('full-evidence.zip','w',zipfile.ZIP_DEFLATED) as full:
+            for p in sorted(root.rglob('*')):
+              if not p.is_file():continue
+              name=p.relative_to(root).as_posix();data=p.read_bytes()
+              inventory.append({'name':name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+              full.writestr(name,data)
+              if '.xcresult/' not in name and p.suffix in ('.log','.json','.jsonl','.png'):
+                review.writestr(name,data)
+          (out/'inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
+          with Path('full-evidence.zip').open('rb') as src:
+            n=0
+            while data:=src.read(60000000):
+              assert n<8,'Unexpectedly large evidence; preserve original artifact'
+              (parts/f'part-{n}.bin').write_bytes(data);n+=1
+          (out/'full-evidence.json').write_text(json.dumps({'parts':n,'bytes':Path('full-evidence.zip').stat().st_size,'sha256':hashlib.sha256(Path('full-evidence.zip').read_bytes()).hexdigest()},indent=2)+'\n')
+          print('Review ZIP bytes:',(out/'logs-and-screenshots.zip').stat().st_size,'full evidence parts:',n)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Light-Review
+          path: review
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part0
+          path: parts/part-0.bin
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part1
+          path: parts/part-1.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part2
+          path: parts/part-2.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part3
+          path: parts/part-3.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part4
+          path: parts/part-4.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part5
+          path: parts/part-5.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part6
+          path: parts/part-6.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part7
+          path: parts/part-7.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
