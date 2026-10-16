@@ -117,3 +117,59 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part8
+          path: parts/part-8.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part9
+          path: parts/part-9.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part10
+          path: parts/part-10.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part11
+          path: parts/part-11.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part12
+          path: parts/part-12.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part13
+          path: parts/part-13.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part14
+          path: parts/part-14.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Evidence-Part15
+          path: parts/part-15.bin
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
