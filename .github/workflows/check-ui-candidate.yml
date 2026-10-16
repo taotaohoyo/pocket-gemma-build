@@ -55,6 +55,17 @@ jobs:
             build/UI/Preview.xcresult
           retention-days: 7
           if-no-files-found: error
+      - name: Preserve the interaction recording on its own
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-UI-Recording
+          path: |
+            build/UI/interaction.mp4
+            build/UI/focused-tests.log
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: ignore
       - name: Preserve small review logs separately
         if: always()
         uses: actions/upload-artifact@v4
