@@ -35,6 +35,7 @@ jobs:
           path: |
             build/UI/*.log
             build/UI/*.json
+            build/UI/*.jsonl
             build/UI/*.png
             build/UI/*.mp4
             build/UI/attachments
