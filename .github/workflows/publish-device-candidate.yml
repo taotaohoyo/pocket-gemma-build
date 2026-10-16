@@ -1,0 +1,54 @@
+name: Publish device candidate as a GitHub release
+# Runs once when this file is pushed. Attaches an already-built, unchanged
+# device IPA artifact to a release so altstore-source.json can point at it.
+on:
+  push:
+    branches: [claude/plus-liquid-glass]
+    paths: [.github/workflows/publish-device-candidate.yml]
+permissions:
+  contents: write
+  actions: read
+env:
+  BUILD_RUN: '38957795792'
+  ARTIFACT: PocketGemma-1.0.21-Device-Candidate
+  TAG: v1.0.21
+  TARGET: 7c559736ea30b6e6e39a71b7233c992b990821fe
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          run-id: ${{ env.BUILD_RUN }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Verify the IPA against its recorded checksum
+        run: |
+          set -euo pipefail
+          cd candidate
+          ls -l
+          sha256sum -c PocketGemma-1.0.21.ipa.sha256
+          stat -c 'IPA_BYTES=%s' PocketGemma-1.0.21.ipa
+      - name: Create the release with the IPA attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'EOF'
+          ＋ボタンのLiquid Glassアニメーションを作り直した実機確認用の版です。**iPhone実機での動作は未確認です。**
+
+          ＋ボタンとメニューを同じガラスとして1つのGlassEffectContainerに置き、開くとボタンのガラスがそのままメニューの形へ変形し、閉じると逆にたどって丸に戻ります。以前のメニューにあった縮小＋フェードの別アニメーションを外しました。視差効果を減らす設定では短いフェードになります。
+
+          シミュレーターのUIテスト7件中6件が成功（メニュー開閉、写真パネル、E4Bの添付ロックとE2B切り替え、大きい文字・視差効果を減らす、ダークモード、送信と戻る、長い会話）。残る1件は録画用テストの終了時にシミュレーターがアプリを終了できなかったもので、アプリの動作による失敗ではありません。
+
+          推論処理・同梱ランタイム（native run 38802464425）・E2Bの画像認識経路・E4Bの添付ロックは変更していません。
+
+          AltStoreソースURLは同じです。
+          https://raw.githubusercontent.com/taotaohoyo/pocket-gemma-build/main/altstore-source.json
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$TARGET" \
+            --title 'Pocket Gemma 1.0.21 — ＋ボタンのLiquid Glass変形' --notes-file notes.md \
+            candidate/PocketGemma-1.0.21.ipa candidate/PocketGemma-1.0.21.ipa.sha256 candidate/candidate-validation.json
