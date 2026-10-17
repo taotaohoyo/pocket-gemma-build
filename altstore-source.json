@@ -17,6 +17,15 @@
       "category": "utilities",
       "versions": [
         {
+          "version": "1.0.23",
+          "buildVersion": "24",
+          "date": "2026-10-17T01:58:00+00:00",
+          "localizedDescription": "＋ボタンをiOS標準のメニューに置き換えました。iOS 26ではメニューがボタンからLiquid Glassで変形して開閉します。項目は写真・カメラ・ファイル・動画／新しい会話・会話一覧・モデルと設定で、ロック中の項目は「調整中」と表示します。E2Bの画像認識とテキスト会話、E4Bの添付ロック、推論処理は変更していません。送信後の吹き出しの重なりは次の版で対応予定です。iOS 26.4以降。",
+          "downloadURL": "https://github.com/taotaohoyo/pocket-gemma-build/releases/download/v1.0.23/PocketGemma-1.0.23.ipa",
+          "size": 32338805,
+          "minOSVersion": "26.4"
+        },
+        {
           "version": "1.0.21",
           "buildVersion": "22",
           "date": "2026-10-16T20:14:30+00:00",
