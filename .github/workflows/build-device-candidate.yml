@@ -54,13 +54,13 @@ jobs:
           set -euo pipefail
           bash scripts/build-ios.sh 2>&1 | tee build/device-ipa-build.log
           mkdir -p build/device-candidate
-          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.0.30.ipa
+          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.0.31.ipa
           cp build/DerivedData/Build/Products/Release-iphoneos/PocketGemma.app/runtime-build.json build/device-candidate/runtime-build-device.json
           python3 - <<'PY'
           import hashlib,json,pathlib
-          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.0.30.ipa'
+          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.0.31.ipa'
           (root/(ipa.name+'.sha256')).write_text(hashlib.sha256(ipa.read_bytes()).hexdigest()+'  '+ipa.name+'\n')
-          result={'candidate':'1.0.30 (31)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
+          result={'candidate':'1.0.31 (32)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
               'priorCandidateSimulatorInference':{'candidate':'1.0.15 (16)','run':38638840490,'passed':4,'failed':12,'skipped':0,
                   'failure':'Apple none-mode RuntimeProxy null builtin; source fix now imports provider C entry point'},
               'currentCandidateSimulatorInference':'recorded separately; a successful IPA build is not an inference result',
@@ -68,10 +68,35 @@ jobs:
           (root/'candidate-validation.json').write_text(json.dumps(result,indent=2)+'\n')
           print(json.dumps(result,indent=2))
           PY
+      - name: Build a separate 12B test IPA with memory entitlements
+        # The regular IPA above stays unsigned and entitlement-free. This copy
+        # carries ad-hoc signed entitlements that AltStore reads when it
+        # re-signs: a larger memory limit and extended virtual addressing,
+        # which a 6.9 GB model plus its GPU weight cache needs to be mapped.
+        run: |
+          set -euo pipefail
+          rm -rf build/Variant && mkdir -p build/Variant
+          ditto build/Payload build/Variant/Payload
+          cat > build/12b.entitlements <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>com.apple.developer.kernel.increased-memory-limit</key><true/>
+          <key>com.apple.developer.kernel.extended-virtual-addressing</key><true/>
+          </dict></plist>
+          PLIST
+          sed -i '' 's/^          //' build/12b.entitlements
+          plutil -lint build/12b.entitlements
+          app=build/Variant/Payload/PocketGemma.app
+          codesign --force --sign - --deep "$app"
+          codesign --force --sign - --entitlements build/12b.entitlements "$app"
+          codesign -d --entitlements - "$app"
+          (cd build/Variant && ditto -c -k --keepParent Payload ../device-candidate/PocketGemma-1.0.31-12B-test.ipa)
+          ls -l build/device-candidate
       - name: Save device IPA separately from semantic test status
         uses: actions/upload-artifact@v4
         with:
-          name: PocketGemma-1.0.30-Device-Candidate
+          name: PocketGemma-1.0.31-Device-Candidate
           path: build/device-candidate
           if-no-files-found: error
           retention-days: 7
