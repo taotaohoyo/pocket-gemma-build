@@ -11,6 +11,7 @@ on:
         options:
           - ui-ux-regression
           - text
+          - long-reply
           - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
