@@ -1,0 +1,31 @@
+name: Check PocketCore unit tests
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: Optional swift test --filter pattern
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: macos-26
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - name: Run PocketCore tests
+        timeout-minutes: 8
+        env:
+          FILTER: ${{ inputs.filter }}
+        run: |
+          set -euo pipefail
+          if [ -n "$FILTER" ]; then
+            swift test --package-path Packages/PocketCore --filter "$FILTER"
+          else
+            swift test --package-path Packages/PocketCore
+          fi
