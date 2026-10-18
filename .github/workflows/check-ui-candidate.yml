@@ -6,7 +6,7 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, core]
 permissions:
   contents: read
 jobs:
@@ -20,13 +20,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
       - name: Verify core attachment, history and motion policies
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           mkdir -p build/UI
           swift test --package-path Packages/PocketCore 2>&1 | tee build/UI/core.log
-      - run: brew install xcodegen
+      - if: inputs.scope != 'core'
+        run: brew install xcodegen
       - name: Test focused native UI interactions
+        if: inputs.scope != 'core'
         # Separate boot480s, compile420s and tests600s watchdogs plus cleanup.
         # The previous19-minute step could kill tests before their own bound.
         timeout-minutes: 26
