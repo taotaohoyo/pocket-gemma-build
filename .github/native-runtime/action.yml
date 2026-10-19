@@ -1,0 +1,30 @@
+name: Native runtime
+description: >-
+  Put PocketGemma-NativeRuntime.zip in a folder: the release pinned in
+  release.json, or the artifact of a newer rebuild-ios-runtime run under test.
+inputs:
+  run-id:
+    description: rebuild-ios-runtime run to use instead of the release; empty or the pinned run uses the release
+    required: false
+    default: ''
+  path:
+    description: Folder that receives PocketGemma-NativeRuntime.zip
+    required: false
+    default: build/native-artifact
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN_ID: ${{ inputs.run-id }}
+        OUT: ${{ inputs.path }}
+      run: python3 "$GITHUB_ACTION_PATH/runtime_release.py" fetch "$OUT" --run-id "$RUN_ID"
+    - if: steps.fetch.outputs.source == 'run'
+      uses: actions/download-artifact@v4
+      with:
+        name: PocketGemma-Rebuilt-NativeRuntime
+        run-id: ${{ inputs.run-id }}
+        github-token: ${{ github.token }}
+        path: ${{ inputs.path }}

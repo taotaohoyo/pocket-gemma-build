@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       native_run_id:
-        description: Successful pinned native LM rebuild run ID
-        required: true
+        description: Newer rebuild-ios-runtime run to try; empty uses the runtime pinned in .github/native-runtime/release.json
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -32,13 +33,10 @@ jobs:
         run: unzip -o NativeRuntime-source.zip
       - name: Unpack semantic image tests
         run: unzip -o NativeVision-source.zip
-      - name: Download the patched vision runtime
-        uses: actions/download-artifact@v4
+      - name: Fetch the pinned native runtime, or the given rebuild run's
+        uses: ./.github/native-runtime
         with:
-          name: PocketGemma-Rebuilt-NativeRuntime
           run-id: ${{ inputs.native_run_id }}
-          github-token: ${{ github.token }}
-          path: build/native-artifact
       - name: Verify and configure the required vision runtime
         run: |
           python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip

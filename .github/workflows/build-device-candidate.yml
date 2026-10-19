@@ -3,8 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       native_run_id:
-        description: Successful verified native runtime run ID
-        required: true
+        description: Newer rebuild-ios-runtime run to try; empty uses the runtime pinned in .github/native-runtime/release.json
+        required: false
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -22,27 +23,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o PocketGemma-source.zip
       - run: unzip -o NativeRuntime-source.zip
-      - name: Verify selected runtime build succeeded
-        env:
-          NATIVE_RUN: ${{ inputs.native_run_id }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request
-          run=os.environ['NATIVE_RUN']; assert run.isdecimal()
-          url=f'https://api.github.com/repos/taotaohoyo/pocket-gemma-build/actions/runs/{run}'
-          request=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'PocketGemma-device-build'})
-          with urllib.request.urlopen(request,timeout=30) as response: data=json.load(response)
-          assert data['path']=='.github/workflows/rebuild-ios-runtime.yml'
-          assert data['status']=='completed' and data['conclusion']=='success'
-          print('Verified successful native build:',run)
-          PY
-      - uses: actions/download-artifact@v4
+      - name: Fetch the pinned native runtime, or the given rebuild run's
+        uses: ./.github/native-runtime
         with:
-          name: PocketGemma-Rebuilt-NativeRuntime
           run-id: ${{ inputs.native_run_id }}
-          github-token: ${{ github.token }}
-          path: build/native-artifact
       - name: Verify six binaries and configure app
         run: |
           python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip

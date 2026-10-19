@@ -3,8 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       native_run_id:
-        description: Successful native runtime build ID
-        required: true
+        description: Newer rebuild-ios-runtime run to try; empty uses the runtime pinned in .github/native-runtime/release.json
+        required: false
+        default: ''
       probe:
         description: Explicit bounded probe; use images only after text smoke passes
         type: choice
@@ -40,12 +41,10 @@ jobs:
           set -euo pipefail
           mkdir -p build/NativeVision
           swift test --package-path Packages/PocketCore 2>&1 | tee build/NativeVision/core-tests.log
-      - uses: actions/download-artifact@v4
+      - name: Fetch the pinned native runtime, or the given rebuild run's
+        uses: ./.github/native-runtime
         with:
-          name: PocketGemma-Rebuilt-NativeRuntime
           run-id: ${{ inputs.native_run_id }}
-          github-token: ${{ github.token }}
-          path: build/native-artifact
       - run: python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
       - run: python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - run: brew install xcodegen

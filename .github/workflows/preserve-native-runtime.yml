@@ -122,9 +122,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o NativeRuntime-source.zip
       - name: Fetch the runtime the way builds will, with a read-only token
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 .github/native-runtime/runtime_release.py fetch build/native-artifact
-          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+        uses: ./.github/native-runtime
+      - run: python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip

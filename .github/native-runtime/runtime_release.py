@@ -116,12 +116,14 @@ def download_asset(release, name, size=None, digest=None):
 
 def fetch(args):
     lock = json.loads(args.lock.read_text())
-    if args.run_id and args.run_id != str(lock['source']['run']):
+    run_id = args.run_id.strip()
+    if run_id and run_id != str(lock['source']['run']):
         # A newer rebuild under test; the caller downloads its artifact.
-        run = json.loads(call(f'repos/{REPO}/actions/runs/{args.run_id}'))
+        require(run_id.isdecimal(), 'The native runtime run ID must be a number')
+        run = json.loads(call(f'repos/{REPO}/actions/runs/{run_id}'))
         require(run['path'] == REBUILD_WORKFLOW, 'The run is not a native runtime rebuild')
         require(run['status'] == 'completed' and run['conclusion'] == 'success', 'The native runtime rebuild did not succeed')
-        print('Using native runtime rebuild run', args.run_id, 'instead of the pinned release', lock['tag'])
+        print('Using native runtime rebuild run', run_id, 'instead of the pinned release', lock['tag'])
         output(source='run')
         return
     release = find_release(lock['tag'])
