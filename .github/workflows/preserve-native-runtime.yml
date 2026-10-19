@@ -1,0 +1,119 @@
+name: Preserve native runtime in a release
+# Runs once when this file is pushed to this branch, or by hand for another
+# rebuild run. Copies an already-built, unchanged runtime artifact into a draft
+# release so builds stop depending on the artifact's 7-day retention.
+# Publishing the checked draft is a separate run with publish enabled.
+on:
+  push:
+    branches: [claude/artifact-preservation-aln82o]
+    paths: [.github/workflows/preserve-native-runtime.yml]
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful rebuild-ios-runtime run whose runtime to keep
+        required: true
+        default: '38802464425'
+      publish:
+        description: Publish the checked draft named in .github/native-runtime/release.json
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: pocket-gemma-native-release
+  cancel-in-progress: false
+jobs:
+  preserve:
+    if: ${{ !inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NATIVE_RUN: ${{ inputs.native_run_id || '38802464425' }}
+    outputs:
+      lock: ${{ steps.check.outputs.lock }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o NativeRuntime-source.zip
+      - name: Check the runtime artifact, its digest and contents
+        id: check
+        run: |
+          set -euo pipefail
+          mkdir -p build/release
+          revision="$(python3 -c "import json;print(json.load(open('NativeRuntime/upstream-lock.json'))['upstreamRevision'])")"
+          curl -fsSL "https://raw.githubusercontent.com/google-ai-edge/LiteRT-LM/$revision/LICENSE" -o build/release/LiteRT-LM-LICENSE.txt
+          curl -fsSL "https://raw.githubusercontent.com/google-ai-edge/LiteRT-LM/$revision/NOTICE" -o build/release/LiteRT-LM-NOTICE.txt || rm -f build/release/LiteRT-LM-NOTICE.txt
+          python3 .github/native-runtime/runtime_release.py preserve "$NATIVE_RUN" build/release
+      - name: Keep the files in a draft release
+        id: release
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+          TARGET: ${{ steps.check.outputs.commit }}
+        run: |
+          set -euo pipefail
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.tag_name == env.TAG)] | length')"
+          echo "existing=$existing" >> "$GITHUB_OUTPUT"
+          if [ "$existing" != 0 ]; then
+            echo "Release $TAG already exists; checking it without uploading again"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$TARGET" \
+              --title "Pocket AI ネイティブランタイム ${TAG#native-runtime-}" --notes-file build/release-notes.md build/release/*
+          fi
+      - name: Download the runtime back and compare every asset digest
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+          EXISTING: ${{ steps.release.outputs.existing }}
+        run: |
+          set -euo pipefail
+          python3 .github/native-runtime/runtime_release.py fetch build/roundtrip --lock build/release/release.json
+          cmp build/roundtrip/PocketGemma-NativeRuntime.zip build/release/PocketGemma-NativeRuntime.zip
+          # An earlier run's manifest names that run, so only a new upload compares it.
+          [ "$EXISTING" = 0 ] || rm build/release/manifest.json
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == env.TAG) | .assets[] | select(env.EXISTING == "0" or .name != "manifest.json")
+              | "\(.digest | ltrimstr("sha256:"))  \(.name)"' > build/release-digests.txt
+          cat build/release-digests.txt
+          test "$(wc -l < build/release-digests.txt)" -eq "$(ls build/release | wc -l)"
+          (cd build/release && sha256sum -c ../release-digests.txt)
+      - name: Show Actions caches, which expire after 7 days without use
+        continue-on-error: true
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | "\(.key)  \(.size_in_bytes) bytes  \(.ref)  last used \(.last_accessed_at)"'
+  read-only-fetch:
+    # Shows whether builds that keep contents: read can see the release.
+    needs: preserve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o NativeRuntime-source.zip
+      - name: Fetch the runtime the way builds will, with a read-only token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCK: ${{ needs.preserve.outputs.lock }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$LOCK" > build-lock.json
+          python3 .github/native-runtime/runtime_release.py fetch build/native-artifact --lock build-lock.json
+          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+  publish:
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the checked draft as a prerelease, not marked latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/native-runtime/runtime_release.py publish
