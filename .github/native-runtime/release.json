@@ -1,0 +1,15 @@
+{
+  "buildID": "0.18.0-pg4",
+  "tag": "native-runtime-0.18.0-pg4",
+  "asset": "PocketGemma-NativeRuntime.zip",
+  "bytes": 60081337,
+  "sha256": "8408728454830db0013e17469291adc967368acb28dd66a06079ef151d462910",
+  "source": {
+    "workflow": ".github/workflows/rebuild-ios-runtime.yml",
+    "run": 38802464425,
+    "job": 116654773998,
+    "commit": "88986141230b70087b75d5c7848a105f36a600ac",
+    "artifact": 12004688571,
+    "artifactDigest": "sha256:66571cce88cbfb2aa60b4badac561e344fb4bdd778d0db15195bc56a48f0acf5"
+  }
+}

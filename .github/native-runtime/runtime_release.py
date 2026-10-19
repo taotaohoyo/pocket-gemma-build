@@ -217,7 +217,7 @@ def preserve(args):
     (args.out.parent / 'release-notes.md').write_text(f'''Pocket AI の実機ビルドが使う LiteRT-LM ネイティブランタイム（{receipt['buildID']}）を、Actions の成果物の保存期限（7日）に左右されないよう保管したものです。アプリの IPA ではなく、AltStore で入れるものでもありません。
 
 - 中身：LiteRT-LM {upstream['upstreamTag']} に vision-runtime.patch（SHA-256 {receipt['patchSHA256'][:12]}…）を当てて作り直した LM 層 CLiteRTLM、公式 {upstream['upstreamTag']} の C ランタイムを改名した PGOriginalRuntime、制約ライブラリ PGConstraintProvider。いずれも iOS 実機とシミュレーターの arm64 です。
-- 元のビルド：rebuild-ios-runtime.yml の run {args.run}（commit {run['head_sha'][:7]}）、Actions 成果物 {artifact['id']}（SHA-256 {digest[:12]}…）。
+- 元のビルド：rebuild-ios-runtime.yml の run {args.run}（commit {run['head_sha'][:7]}）、Actions 成果物 {artifact['id']}（SHA-256 {digest[:12]}…）。タグはビルド元ではなく、公開した時点の main を指します。
 - {RUNTIME}：{len(runtime):,} バイト、SHA-256 `{runtime_sha}`。成果物に入っていたものと同じバイト列です。
 - manifest.json に各バイナリと全ファイルの SHA-256、native-rebuild-{args.run}.log.gz に元のビルドログがあります。
 - LiteRT-LM のライセンスは Apache License 2.0 です（LiteRT-LM-LICENSE.txt）。
@@ -226,8 +226,7 @@ def preserve(args):
 ''')
     print(json.dumps({'tag': tag, 'runtime': {'bytes': len(runtime), 'sha256': runtime_sha}, 'artifactDigest': digest,
                       'members': len(members), 'binaries': len(receipt['binaries']), 'findings': findings}, indent=2, ensure_ascii=False))
-    output(tag=tag, build=receipt['buildID'], commit=run['head_sha'], sha256=runtime_sha, bytes=len(runtime), blocking=len(blocking),
-           lock=json.dumps(lock, separators=(',', ':')))
+    output(tag=tag, build=receipt['buildID'], blocking=len(blocking))
 
 
 def publish(args):
