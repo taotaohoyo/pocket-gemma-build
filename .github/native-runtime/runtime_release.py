@@ -226,7 +226,7 @@ def preserve(args):
 ''')
     print(json.dumps({'tag': tag, 'runtime': {'bytes': len(runtime), 'sha256': runtime_sha}, 'artifactDigest': digest,
                       'members': len(members), 'binaries': len(receipt['binaries']), 'findings': findings}, indent=2, ensure_ascii=False))
-    output(tag=tag, commit=run['head_sha'], sha256=runtime_sha, bytes=len(runtime), blocking=len(blocking),
+    output(tag=tag, build=receipt['buildID'], commit=run['head_sha'], sha256=runtime_sha, bytes=len(runtime), blocking=len(blocking),
            lock=json.dumps(lock, separators=(',', ':')))
 
 

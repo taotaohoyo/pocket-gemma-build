@@ -36,6 +36,7 @@ jobs:
       NATIVE_RUN: ${{ inputs.native_run_id || '38802464425' }}
     outputs:
       lock: ${{ steps.check.outputs.lock }}
+      released: ${{ steps.release.outcome }}
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o NativeRuntime-source.zip
@@ -48,8 +49,17 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/google-ai-edge/LiteRT-LM/$revision/LICENSE" -o build/release/LiteRT-LM-LICENSE.txt
           curl -fsSL "https://raw.githubusercontent.com/google-ai-edge/LiteRT-LM/$revision/NOTICE" -o build/release/LiteRT-LM-NOTICE.txt || rm -f build/release/LiteRT-LM-NOTICE.txt
           python3 .github/native-runtime/runtime_release.py preserve "$NATIVE_RUN" build/release
+      - name: Keep the checked files as a 90-day artifact until the release exists
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-NativeRuntime-${{ steps.check.outputs.build }}
+          path: build/release
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
       - name: Keep the files in a draft release
         id: release
+        continue-on-error: true
         env:
           TAG: ${{ steps.check.outputs.tag }}
           TARGET: ${{ steps.check.outputs.commit }}
@@ -59,11 +69,19 @@ jobs:
           echo "existing=$existing" >> "$GITHUB_OUTPUT"
           if [ "$existing" != 0 ]; then
             echo "Release $TAG already exists; checking it without uploading again"
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$TARGET" \
-              --title "Pocket AI ネイティブランタイム ${TAG#native-runtime-}" --notes-file build/release-notes.md build/release/*
+          elif ! gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$TARGET" \
+              --title "Pocket AI ネイティブランタイム ${TAG#native-runtime-}" --notes-file build/release-notes.md build/release/*; then
+            # Name the permission GitHub expected for creating a draft, then stop.
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases" --include -f tag_name="$TAG" -F draft=true > build/create.txt 2>&1 || true
+            grep -iE '^HTTP/|^x-accepted-github-permissions|^x-github-request-id|"message"|"documentation_url"|"id":' build/create.txt || true
+            if grep -q '"draft": *true' build/create.txt; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$(sed -n '/^{/,$p' build/create.txt | jq .id)"
+              echo 'A bare draft could be created and was deleted; the full release request was refused'
+            fi
+            exit 1
           fi
       - name: Download the runtime back and compare every asset digest
+        if: steps.release.outcome == 'success'
         env:
           TAG: ${{ steps.check.outputs.tag }}
           EXISTING: ${{ steps.release.outputs.existing }}
@@ -87,6 +105,7 @@ jobs:
   read-only-fetch:
     # Shows whether builds that keep contents: read can see the release.
     needs: preserve
+    if: needs.preserve.outputs.released == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
