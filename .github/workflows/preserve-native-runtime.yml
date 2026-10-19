@@ -1,12 +1,9 @@
 name: Preserve native runtime in a release
-# Runs once when this file is pushed to this branch, or by hand for another
-# rebuild run. Copies an already-built, unchanged runtime artifact into a draft
-# release so builds stop depending on the artifact's 7-day retention.
-# Publishing the checked draft is a separate run with publish enabled.
+# Run by hand with a successful rebuild-ios-runtime run. Copies its already-built,
+# unchanged runtime artifact into a draft release so builds stop depending on
+# the artifact's 7-day retention. Publishing the checked draft is a separate run
+# with publish enabled.
 on:
-  push:
-    branches: [claude/artifact-preservation-aln82o]
-    paths: [.github/workflows/preserve-native-runtime.yml]
   workflow_dispatch:
     inputs:
       native_run_id:
@@ -33,7 +30,7 @@ jobs:
         shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
-      NATIVE_RUN: ${{ inputs.native_run_id || '38802464425' }}
+      NATIVE_RUN: ${{ inputs.native_run_id }}
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o NativeRuntime-source.zip
