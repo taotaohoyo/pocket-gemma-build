@@ -31,7 +31,7 @@ jobs:
         if: inputs.scope != 'core'
         # Separate boot480s, compile420s and tests600s watchdogs plus cleanup.
         # The previous19-minute step could kill tests before their own bound.
-        # The composer scope's sixteen cases need about 19 minutes of tests.
+        # The composer scope (eighteen cases) needs up to about 19 minutes.
         timeout-minutes: 32
         env:
           UI_FOCUSED_ONLY: '1'
