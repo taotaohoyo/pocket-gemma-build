@@ -14,6 +14,8 @@ on:
           - text
           - long-reply
           - chart-reply
+          - qwen-text
+          - files
           - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
@@ -28,7 +30,9 @@ jobs:
     # Allow the existing 10-minute image watchdog to finish and upload evidence.
     # This changes no inference timeout and starts no full image suite.
     # chart-reply runs five real replies (E2B and E4B on CPU) after that setup.
-    timeout-minutes: 50
+    # qwen-text (Qwen3 0.6B and Qwen2.5 1.5B on CPU) gives its probe 45 minutes;
+    # every probe is still bounded by its own watchdog limit.
+    timeout-minutes: 65
     defaults:
       run:
         shell: bash
