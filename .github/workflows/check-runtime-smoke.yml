@@ -13,6 +13,7 @@ on:
           - ui-ux-regression
           - text
           - long-reply
+          - chart-reply
           - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
@@ -26,7 +27,8 @@ jobs:
     # The measured text run needed ~13 minutes for Simulator/build/model setup.
     # Allow the existing 10-minute image watchdog to finish and upload evidence.
     # This changes no inference timeout and starts no full image suite.
-    timeout-minutes: 28
+    # chart-reply runs five real replies (E2B and E4B on CPU) after that setup.
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
