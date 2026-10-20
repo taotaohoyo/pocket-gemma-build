@@ -1,7 +1,8 @@
 """Checks the address-space test IPA against the unsigned IPA it was signed from.
 
 The app must carry exactly the two entitlements, the extension none of them,
-and nothing but signatures may differ from the unsigned build.
+and nothing but signatures (Mach-O files and _CodeSignature) may differ from
+the unsigned build. The runtime frameworks arrive signed and are re-signed.
 """
 import plistlib
 import struct
@@ -54,7 +55,7 @@ def check(unsigned_path, signed_path):
         for name, item in old.items():
             assert new[name].external_attr >> 16 == item.external_attr >> 16, f'Permissions changed: {name}'
             data = signed.read(name)
-            if data[:4] != MACHO:
+            if data[:4] != MACHO and '/_CodeSignature/' not in name:
                 assert data == unsigned.read(name), f'Changed by signing: {name}'
         info = plistlib.loads(signed.read(BASE + 'Info.plist'))
         assert info['CFBundleIdentifier'] == 'app.pocketgemma.personal'
@@ -69,7 +70,7 @@ def check(unsigned_path, signed_path):
             assert (extension['CFBundleShortVersionString'], extension['CFBundleVersion']) == version
             binary = signed.read(plist.removesuffix('Info.plist') + extension['CFBundleExecutable'])
             assert not KEYS & set(entitlements(binary)), 'The extension must not carry the entitlements'
-        signatures = sum(name.endswith('/_CodeSignature/CodeResources') for name in added)
+        signatures = sum(name.endswith('/_CodeSignature/CodeResources') for name in new)
         print(f'Address-space test IPA OK: {version[0]} ({version[1]}), {sorted(granted)}, {signatures} sealed bundles')
 
 
