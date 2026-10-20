@@ -17,6 +17,7 @@ on:
           - chart-talk
           - chart-recall
           - chart-sheet
+          - chart-final
           - qwen-text
           - qwen-files
           - files
@@ -34,7 +35,7 @@ jobs:
     # Allow the existing 10-minute image watchdog to finish and upload evidence.
     # This changes no inference timeout and starts no full image suite.
     # chart-reply runs five real replies (E2B and E4B on CPU) after that setup.
-    # chart-talk, chart-recall and chart-sheet run E2B chats of up to four turns (30 minutes).
+    # chart-talk, chart-recall, chart-sheet and chart-final run E2B chats of up to four turns (30 minutes).
     # qwen-text, qwen-files and files give their probe the watchdog's maximum,
     # 30 minutes; every probe is still bounded by its own watchdog limit.
     timeout-minutes: 65
