@@ -1,0 +1,191 @@
+name: Upload a build to TestFlight (internal testers only)
+# Two jobs, so that code from the build branch never runs next to the signing
+# keys. The archive job builds the given branch's PocketGemma-source.zip
+# without signing and without secrets. The upload job runs only this file's
+# scripts (.github/testflight, from the branch this workflow runs on), waits
+# for approval in the testflight environment, signs at export with the paid
+# team's cloud-managed certificate and uploads. See .github/testflight/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or commit whose PocketGemma-source.zip to build (its version and build number must be new to TestFlight)
+        required: true
+      memory_entitlements:
+        description: Memory entitlements on the app (never on the Live Activity extension); the App ID must have the same capabilities turned on
+        required: true
+        type: choice
+        options: [eva+iml, eva, iml, none]
+        default: eva+iml
+permissions:
+  contents: read
+env:
+  # The paid team's App IDs: the app, and <app>.activity for the Live Activity
+  # extension. PocketGemma-source.zip keeps app.pocketgemma.personal for the
+  # unsigned SideInstaller and AltStore builds; set-bundle-id.py changes it
+  # for this build only. Not a secret.
+  BUNDLE_ID: com.fielua.app
+concurrency:
+  group: pocket-ai-testflight
+  cancel-in-progress: false
+jobs:
+  archive:
+    name: Archive without signing (no secrets)
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      source: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.archive.outputs.version }}
+      build: ${{ steps.archive.outputs.build }}
+      sha256: ${{ steps.archive.outputs.sha256 }}
+      xcode: ${{ steps.archive.outputs.xcode }}
+    steps:
+      - name: Check out the branch to build
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - name: Check out this workflow's scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .testflight-ci
+          sparse-checkout: .github/testflight
+      - id: source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: unzip -o PocketGemma-source.zip
+      - run: unzip -o NativeRuntime-source.zip
+      - name: Fetch the pinned native runtime
+        uses: ./.github/native-runtime
+      - name: Verify six binaries and configure app
+        run: |
+          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+          python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
+      - run: brew install xcodegen
+      - name: Use the paid team's App IDs for this build
+        run: python3 .testflight-ci/.github/testflight/set-bundle-id.py "$BUNDLE_ID"
+      - name: Archive the app without signing
+        id: archive
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source scripts/select-xcode.sh
+          xcodegen generate --spec project.yml
+          mkdir -p build/testflight
+          xcodebuild archive \
+            -project PocketGemma.xcodeproj \
+            -scheme PocketGemma \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -archivePath build/PocketGemma.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' 2>&1 | tee build/testflight-archive.log
+          bash .testflight-ci/.github/testflight/finish-archive.sh build/PocketGemma.xcarchive
+          properties=build/PocketGemma.xcarchive/Info.plist
+          app=build/PocketGemma.xcarchive/Products/Applications/PocketGemma.app
+          # expect_id <plist> <key> <identifier>
+          expect_id() {
+            local actual
+            actual="$(/usr/libexec/PlistBuddy -c "Print :$2" "$1")"
+            [[ "$actual" == "$3" ]] || { echo "$1 has $actual, expected $3"; exit 1; }
+          }
+          expect_id "$app/Info.plist" CFBundleIdentifier "$BUNDLE_ID"
+          expect_id "$app/PlugIns/PocketActivity.appex/Info.plist" CFBundleIdentifier "$BUNDLE_ID.activity"
+          expect_id "$properties" ApplicationProperties:CFBundleIdentifier "$BUNDLE_ID"
+          echo "Bundle identifiers: $BUNDLE_ID and $BUNDLE_ID.activity"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$properties")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$properties")"
+          ditto -c -k --keepParent build/PocketGemma.xcarchive build/testflight/PocketGemma.xcarchive.zip
+          sha="$(shasum -a 256 build/testflight/PocketGemma.xcarchive.zip | cut -d' ' -f1)"
+          {
+            echo "version=$version"
+            echo "build=$build"
+            echo "sha256=$sha"
+            echo "xcode=$DEVELOPER_DIR"
+          } >> "$GITHUB_OUTPUT"
+          echo "Archived $version ($build), zip SHA-256 $sha"
+      - name: Hand the unsigned archive to the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive
+          path: build/testflight/PocketGemma.xcarchive.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Preserve the archive log on success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive-Log
+          path: build/testflight-archive.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+  upload:
+    name: Sign at export and upload to TestFlight
+    needs: archive
+    runs-on: macos-26
+    timeout-minutes: 30
+    # Holds the keys. Its protection rules (required reviewer, main only) are
+    # set in the repository settings; see .github/testflight/README.md.
+    environment: testflight
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out this workflow's scripts (never the build branch)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/testflight
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive
+          path: ${{ runner.temp }}/archive
+      - name: Check the archive is the one the archive job made
+        env:
+          EXPECTED: ${{ needs.archive.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/archive"
+          echo "$EXPECTED  PocketGemma.xcarchive.zip" | shasum -a 256 -c -
+          ditto -x -k PocketGemma.xcarchive.zip .
+      - name: Sign ad hoc with each target's entitlements
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MEMORY: ${{ inputs.memory_entitlements }}
+        run: bash .github/testflight/sign-archive.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive" "$MEMORY"
+      - name: Export with the paid team's certificate, check, and upload
+        env:
+          MEMORY: ${{ inputs.memory_entitlements }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_NAME: ${{ secrets.APPLE_TEAM_NAME }}
+          XCODE: ${{ needs.archive.outputs.xcode }}
+        run: bash .github/testflight/export-upload.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive"
+      - name: Remove the key and the signed archive
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/export" "$RUNNER_TEMP/export-check" "$RUNNER_TEMP"/ExportOptions-*.plist "$RUNNER_TEMP"/export-*.log
+      - name: Summary
+        if: success()
+        env:
+          VERSION: ${{ needs.archive.outputs.version }}
+          BUILD: ${{ needs.archive.outputs.build }}
+          SOURCE: ${{ needs.archive.outputs.source }}
+          MEMORY: ${{ inputs.memory_entitlements }}
+        run: |
+          {
+            echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight (internal testers only)."
+            echo "Memory entitlements on the app: $MEMORY (checked in the signed app before the upload)."
+            echo "App Store Connect processes the build before it shows in TestFlight."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
