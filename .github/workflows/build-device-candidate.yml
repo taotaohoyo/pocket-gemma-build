@@ -6,11 +6,6 @@ on:
         description: Newer rebuild-ios-runtime run to try; empty uses the runtime pinned in .github/native-runtime/release.json
         required: false
         default: ''
-      address_space_test:
-        description: Build the address-space test IPA 1.0.112 (113) instead, signed ad hoc with Extended Virtual Addressing and Increased Memory Limit (not a normal version)
-        required: false
-        type: boolean
-        default: false
 permissions:
   contents: read
   actions: read
@@ -37,32 +32,19 @@ jobs:
           python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
           python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - run: brew install xcodegen
-      - name: Number the address-space test build 1.0.112 (113)
-        if: ${{ inputs.address_space_test }}
-        run: |
-          python3 - <<'PY'
-          import pathlib,re
-          spec=pathlib.Path('project.yml'); text=spec.read_text()
-          for key,value in (('MARKETING_VERSION','1.0.112'),('CURRENT_PROJECT_VERSION','113')):
-              text,count=re.subn(rf'^(\s*{key}: )"[^"]*"$',rf'\g<1>"{value}"',text,flags=re.M)
-              assert count==1,(key,count)
-          spec.write_text(text)
-          PY
-          grep -n -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' project.yml
       - name: Build and validate device Release IPA
-        if: ${{ !inputs.address_space_test }}
         timeout-minutes: 22
         run: |
           set -euo pipefail
           bash scripts/build-ios.sh 2>&1 | tee build/device-ipa-build.log
           mkdir -p build/device-candidate
-          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.0.110.ipa
+          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.0.119.ipa
           cp build/DerivedData/Build/Products/Release-iphoneos/PocketGemma.app/runtime-build.json build/device-candidate/runtime-build-device.json
           python3 - <<'PY'
           import hashlib,json,pathlib
-          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.0.110.ipa'
+          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.0.119.ipa'
           (root/(ipa.name+'.sha256')).write_text(hashlib.sha256(ipa.read_bytes()).hexdigest()+'  '+ipa.name+'\n')
-          result={'candidate':'1.0.110 (111)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
+          result={'candidate':'1.0.119 (120)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
               'priorCandidateSimulatorInference':{'candidate':'1.0.15 (16)','run':38638840490,'passed':4,'failed':12,'skipped':0,
                   'failure':'Apple none-mode RuntimeProxy null builtin; source fix now imports provider C entry point'},
               'currentCandidateSimulatorInference':'recorded separately; a successful IPA build is not an inference result',
@@ -71,41 +53,10 @@ jobs:
           print(json.dumps(result,indent=2))
           PY
       - name: Save device IPA separately from semantic test status
-        if: ${{ !inputs.address_space_test }}
         uses: actions/upload-artifact@v4
         with:
-          name: PocketGemma-1.0.110-Device-Candidate
+          name: PocketGemma-1.0.119-Device-Candidate
           path: build/device-candidate
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-      - name: Build the address-space test IPA and sign it ad hoc with the two entitlements
-        if: ${{ inputs.address_space_test }}
-        timeout-minutes: 22
-        run: |
-          set -euo pipefail
-          bash scripts/build-ios.sh 2>&1 | tee build/device-ipa-build.log
-          out=build/address-space-test
-          bash .github/address-space-test/sign-ipa.sh build/PocketGemma-unsigned.ipa "$out/PocketGemma-1.0.112-Address-Space-Test.ipa" 2>&1 | tee -a build/device-ipa-build.log
-          cp build/DerivedData/Build/Products/Release-iphoneos/PocketGemma.app/runtime-build.json "$out/runtime-build-device.json"
-          cp .github/address-space-test/address-space.entitlements "$out/"
-          python3 - <<'PY'
-          import hashlib,json,pathlib
-          root=pathlib.Path('build/address-space-test'); ipa=root/'PocketGemma-1.0.112-Address-Space-Test.ipa'
-          (root/(ipa.name+'.sha256')).write_text(hashlib.sha256(ipa.read_bytes()).hexdigest()+'  '+ipa.name+'\n')
-          result={'candidate':'1.0.112 (113) address-space test','normalVersion':False,'altStoreSource':False,'minimumIOS':'26.4',
-              'entitlements':['com.apple.developer.kernel.extended-virtual-addressing','com.apple.developer.kernel.increased-memory-limit'],
-              'signing':'ad hoc, only to carry the entitlements; the installer re-signs the app','ipaBuild':'passed','ipaStructure':'passed',
-              'physicalIPhoneInference':'unverified; whether the installer keeps the entitlements is unknown'}
-          (root/'candidate-validation.json').write_text(json.dumps(result,indent=2)+'\n')
-          print(json.dumps(result,indent=2))
-          PY
-      - name: Save the address-space test IPA
-        if: ${{ inputs.address_space_test }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: PocketGemma-1.0.112-Address-Space-Test
-          path: build/address-space-test
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
