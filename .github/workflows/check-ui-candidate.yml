@@ -6,7 +6,7 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, core]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, core]
 permissions:
   contents: read
 jobs:
@@ -51,6 +51,7 @@ jobs:
           UI_ORB_VIDEO_ONLY: ${{ inputs.scope == 'orb-video' && '1' || '0' }}
           UI_COMPOSER_ONLY: ${{ inputs.scope == 'composer' && '1' || '0' }}
           UI_COMPOSER_LAB_ONLY: ${{ inputs.scope == 'composer-lab' && '1' || '0' }}
+          UI_MENU_VIDEO_ONLY: ${{ inputs.scope == 'menu-video' && '1' || '0' }}
         run: |
           set -euo pipefail
           bash scripts/check-ui.sh 2>&1 | tee build/UI/uitests.log
