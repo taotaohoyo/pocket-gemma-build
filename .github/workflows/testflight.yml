@@ -6,11 +6,16 @@ name: Upload a build to TestFlight (internal testers only)
 # for approval in the testflight environment, signs at export with the paid
 # team's cloud-managed certificate and uploads. See .github/testflight/README.md.
 on:
-  # Temporary: checks the archive job (no secrets, nothing uploaded) on this
-  # branch before the workflow reaches main. Replaced by workflow_dispatch.
-  push:
-    branches: [claude/project-thread-48a0re]
-    paths: [.github/workflows/testflight.yml]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or commit whose PocketGemma-source.zip to build (its version and build number must be new to TestFlight)
+        required: true
+      address_space:
+        description: Add Extended Virtual Addressing and Increased Memory Limit (address-space test builds only)
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -37,7 +42,7 @@ jobs:
       - name: Check out the branch to build
         uses: actions/checkout@v4
         with:
-          ref: 98a943a2815c8b270326c43b688997ddec40f0d5
+          ref: ${{ inputs.source_ref }}
       - name: Check out this workflow's scripts
         uses: actions/checkout@v4
         with:
@@ -103,3 +108,63 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  upload:
+    name: Sign at export and upload to TestFlight
+    needs: archive
+    runs-on: macos-26
+    timeout-minutes: 30
+    # Holds the keys. Its protection rules (required reviewer, main only) are
+    # set in the repository settings; see .github/testflight/README.md.
+    environment: testflight
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out this workflow's scripts (never the build branch)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/testflight
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive
+          path: ${{ runner.temp }}/archive
+      - name: Check the archive is the one the archive job made
+        env:
+          EXPECTED: ${{ needs.archive.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/archive"
+          echo "$EXPECTED  PocketGemma.xcarchive.zip" | shasum -a 256 -c -
+          ditto -x -k PocketGemma.xcarchive.zip .
+      - name: Sign ad hoc with each target's entitlements
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ADDRESS_SPACE: ${{ inputs.address_space }}
+        run: bash .github/testflight/sign-archive.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive" "$ADDRESS_SPACE"
+      - name: Export with the paid team's certificate and upload
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_NAME: ${{ secrets.APPLE_TEAM_NAME }}
+          XCODE: ${{ needs.archive.outputs.xcode }}
+        run: bash .github/testflight/export-upload.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive"
+      - name: Remove the key and the signed archive
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/ExportOptions.plist" "$RUNNER_TEMP/export.log"
+      - name: Summary
+        if: success()
+        env:
+          VERSION: ${{ needs.archive.outputs.version }}
+          BUILD: ${{ needs.archive.outputs.build }}
+          SOURCE: ${{ needs.archive.outputs.source }}
+          ADDRESS_SPACE: ${{ inputs.address_space }}
+        run: |
+          {
+            echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight (internal testers only)."
+            echo "Address-space entitlements: $ADDRESS_SPACE."
+            echo "App Store Connect processes the build before it shows in TestFlight."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
