@@ -5,7 +5,8 @@
 ## 流れ
 
 1. **archive ジョブ（鍵なし）**
-   - 指定したブランチを、署名なしで `xcodebuild archive` します。
+   - `set-bundle-id.py` が、このジョブのチェックアウトの中だけで、Bundle ID を有料チームの App ID に変えます。アプリは `BUNDLE_ID`（`com.fielua.app`）、Live Activity の拡張は `com.fielua.app.activity` です。PocketGemma-source.zip は `app.pocketgemma.personal` のままなので、SideInstaller と AltStore 用の署名なしビルドは変わりません。
+   - 指定したブランチを、署名なしで `xcodebuild archive` します。アーカイブのアプリと拡張が新しい ID になっていることを確かめます。
    - `finish-archive.sh` が、`scripts/build-ios.sh` と同じランタイムの記録とライセンスを入れます。そのうえで、App Store 用のプライバシーマニフェスト（`PrivacyInfo.xcprivacy`）を入れ、ソースの `check-ipa.py` で確かめます。
    - 署名なしのアーカイブを、1日だけの成果物として次のジョブに渡します。中身は、今までの署名なし IPA と同じ種類のものです。
 2. **upload ジョブ（Environment `testflight`、承認が要る）**
@@ -28,10 +29,10 @@
 ### Apple Developer と App Store Connect
 
 1. Developer サイトの Identifiers で、Explicit の App ID を2つ登録します。
-   - アプリ：`app.pocketgemma.personal`
-   - Live Activity の拡張：`app.pocketgemma.personal.activity`
+   - アプリ：`com.fielua.app`（ワークフローの `BUNDLE_ID`）
+   - Live Activity の拡張：`com.fielua.app.activity`
    - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張の App ID ではオンにしません。
-2. App Store Connect で、新規 App を作ります。Bundle ID は `app.pocketgemma.personal` にします。名前は App Store 全体で重ならないものにします。
+2. App Store Connect で、新規 App を作ります。Bundle ID は `com.fielua.app` にします。名前は App Store 全体で重ならないものにします（今は Fielua）。iPhone のホーム画面の名前は、アプリの設定どおり「Pocket AI」です。
 3. TestFlight の内部テスターのグループを作り、自分を入れます。
 4. App Store Connect の「ユーザとアクセス」から「統合」、「App Store Connect API」を開きます。チームキーを **Admin** のアクセスで作ります。
    - クラウド管理の配布証明書を API キーで使うには、Admin が要ります。
@@ -72,6 +73,8 @@
 - TestFlight と App Store では、Apple がアプリを署名し直して配ります。権限は、上げたビルドの署名とプロファイルに入っているものが使われます。このワークフローは、上げる前の署名を確かめます。実機で効いているかは、アプリの「画像の最小再現テスト」で、アドレス空間の広さ・最大の連続した空き・`os_proc_available_memory` を、権限のないアプリと比べて確かめます。
 
 ## 注意
+
+- App ID を変えるときは、`testflight.yml` の `BUNDLE_ID` を変えます。拡張は、いつも `<BUNDLE_ID>.activity` です。どちらの App ID も、Developer サイトと App Store Connect に先に作っておきます。
 
 - TestFlight は、同じ版の同じビルド番号を2回受け付けません。上げるたびに、新しいビルド番号（project.yml の `CURRENT_PROJECT_VERSION`）が要ります。
 - 鍵を差し替えるときは、App Store Connect で古いキーを取り消し、Environment の Secrets を入れ直します。

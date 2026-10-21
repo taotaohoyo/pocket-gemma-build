@@ -12,7 +12,7 @@ on:
         description: Branch or commit whose PocketGemma-source.zip to build (its version and build number must be new to TestFlight)
         required: true
       memory_entitlements:
-        description: Memory entitlements on the app (never on the Live Activity extension); the App ID must have the same capabilities on
+        description: Memory entitlements on the app (never on the Live Activity extension); the App ID must have the same capabilities turned on
         required: true
         type: choice
         options: [eva+iml, eva, iml, none]
