@@ -11,11 +11,12 @@ on:
       source_ref:
         description: Branch or commit whose PocketGemma-source.zip to build (its version and build number must be new to TestFlight)
         required: true
-      address_space:
-        description: Add Extended Virtual Addressing and Increased Memory Limit (address-space test builds only)
-        required: false
-        type: boolean
-        default: false
+      memory_entitlements:
+        description: Memory entitlements on the app (never on the Live Activity extension); the App ID must have the same capabilities on
+        required: true
+        type: choice
+        options: [eva+iml, eva, iml, none]
+        default: eva+iml
 permissions:
   contents: read
 concurrency:
@@ -141,10 +142,11 @@ jobs:
       - name: Sign ad hoc with each target's entitlements
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          ADDRESS_SPACE: ${{ inputs.address_space }}
-        run: bash .github/testflight/sign-archive.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive" "$ADDRESS_SPACE"
-      - name: Export with the paid team's certificate and upload
+          MEMORY: ${{ inputs.memory_entitlements }}
+        run: bash .github/testflight/sign-archive.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive" "$MEMORY"
+      - name: Export with the paid team's certificate, check, and upload
         env:
+          MEMORY: ${{ inputs.memory_entitlements }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -154,17 +156,17 @@ jobs:
         run: bash .github/testflight/export-upload.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive"
       - name: Remove the key and the signed archive
         if: always()
-        run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/ExportOptions.plist" "$RUNNER_TEMP/export.log"
+        run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/export" "$RUNNER_TEMP/export-check" "$RUNNER_TEMP"/ExportOptions-*.plist "$RUNNER_TEMP"/export-*.log
       - name: Summary
         if: success()
         env:
           VERSION: ${{ needs.archive.outputs.version }}
           BUILD: ${{ needs.archive.outputs.build }}
           SOURCE: ${{ needs.archive.outputs.source }}
-          ADDRESS_SPACE: ${{ inputs.address_space }}
+          MEMORY: ${{ inputs.memory_entitlements }}
         run: |
           {
             echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight (internal testers only)."
-            echo "Address-space entitlements: $ADDRESS_SPACE."
+            echo "Memory entitlements on the app: $MEMORY (checked in the signed app before the upload)."
             echo "App Store Connect processes the build before it shows in TestFlight."
           } | tee -a "$GITHUB_STEP_SUMMARY"

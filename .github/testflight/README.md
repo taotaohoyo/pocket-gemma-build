@@ -11,8 +11,16 @@
 2. **upload ジョブ（Environment `testflight`、承認が要る）**
    - このワークフローがあるブランチ（main）の `.github/testflight` のスクリプトだけを使います。ビルドしたブランチのコードは、鍵と同じジョブでは動かしません。
    - アーカイブの SHA-256 を確かめます。
-   - `sign-archive.sh` が、アプリと Live Activity 拡張を、それぞれの識別子の権限で ad hoc 署名します。`address_space` を選んだときは、アプリに Extended Virtual Addressing と Increased Memory Limit も付けます。
-   - `export-upload.sh` が、App Store Connect の API キーで、有料チームのクラウド管理の配布証明書を使って書き出し、TestFlight に上げます（`testFlightInternalTestingOnly`）。
+   - `sign-archive.sh` が、アプリと Live Activity 拡張を、それぞれの識別子の権限で ad hoc 署名します。アプリには、`memory_entitlements` で選んだメモリの権限も付けます。拡張には付けません。署名のあと、`check-export.py --adhoc` で中身を確かめます。
+   - `export-upload.sh` が、App Store Connect の API キーで、有料チームのクラウド管理の配布証明書を使って書き出します。書き出しは2回です。
+     1. ランナーの上に IPA を作り、`check-export.py` で確かめてから消します。
+     2. 確かめが通ったときだけ、同じアーカイブと同じ設定で、TestFlight に直接上げます（`testFlightInternalTestingOnly`）。
+   - `check-export.py` が確かめること（アプリと拡張のそれぞれ）
+     - App ID（`application-identifier`）とチームが、Bundle ID と Team ID に合っている。
+     - メモリの権限が、選んだとおりにアプリだけに付いている。拡張には付いていない。デバッグ用の Increased Debugging Memory Limit はどこにも付いていない。
+     - 埋め込まれたプロファイルが、そのチームの App Store 用（端末の一覧なし、TestFlight 可、期限内）である。
+     - 署名に入った権限が、すべてプロファイルで許されている。選んだメモリの権限を、プロファイルが許している。
+     - 配布用の証明書で署名され、`codesign --verify --deep --strict` が通る。
    - ジョブのログは公開されます。そのため、出すのは `redact-log.py` で絞り、名前とメールを伏せた行だけです。署名した IPA、プロファイル、ログ全体は、ランナーの外に出しません。
 
 ## 最初に一度だけ設定すること
@@ -22,7 +30,7 @@
 1. Developer サイトの Identifiers で、Explicit の App ID を2つ登録します。
    - アプリ：`app.pocketgemma.personal`
    - Live Activity の拡張：`app.pocketgemma.personal.activity`
-   - アドレス空間の試験をするときは、アプリの App ID で Extended Virtual Address Space と Increased Memory Limit をオンにします。
+   - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張の App ID ではオンにしません。
 2. App Store Connect で、新規 App を作ります。Bundle ID は `app.pocketgemma.personal` にします。名前は App Store 全体で重ならないものにします。
 3. TestFlight の内部テスターのグループを作り、自分を入れます。
 4. App Store Connect の「ユーザとアクセス」から「統合」、「App Store Connect API」を開きます。チームキーを **Admin** のアクセスで作ります。
@@ -48,9 +56,20 @@
 
 1. Actions の「Upload a build to TestFlight」を、main で手動実行します。
    - `source_ref` には、ビルドするブランチかコミットを入れます。
-   - `address_space` は、アドレス空間の試験版のときだけオンにします。
+   - `memory_entitlements` は、ふだんは `eva+iml` のままにします。片方だけの効き目を比べるときは `eva` か `iml`、付けない版は `none` にします。選んだ権限が App ID でオンになっていないと、書き出しか確かめで止まり、何も上がりません。
 2. archive ジョブが終わると、upload ジョブが承認待ちになります。「Review deployments」で `testflight` を承認します。
 3. App Store Connect の処理が終わると、TestFlight アプリに出ます。
+
+## メモリの権限について
+
+- **Extended Virtual Addressing**（`com.apple.developer.kernel.extended-virtual-addressing`）
+  - iOS 14 から。アプリが使えるアドレス空間を広げます。
+  - 有料の Apple Developer Program（と Enterprise）だけで使えます。無料の Apple ID では使えません。
+- **Increased Memory Limit**（`com.apple.developer.kernel.increased-memory-limit`）
+  - iOS 15 から。アプリが使えるメモリの上限を上げてよい、とシステムに伝えます。
+  - Apple の説明では、上がるのは一部の機種だけです。実際に使える量は `os_proc_available_memory` で確かめます。増えなくても正しく動くようにしておく必要があります。
+- **Increased Debugging Memory Limit** はデバッグ用で、配布するビルドには入りません。このワークフローでは付けません。
+- TestFlight と App Store では、Apple がアプリを署名し直して配ります。権限は、上げたビルドの署名とプロファイルに入っているものが使われます。このワークフローは、上げる前の署名を確かめます。実機で効いているかは、アプリの「画像の最小再現テスト」で、アドレス空間の広さ・最大の連続した空き・`os_proc_available_memory` を、権限のないアプリと比べて確かめます。
 
 ## 注意
 
