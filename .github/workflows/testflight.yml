@@ -1,0 +1,105 @@
+name: Upload a build to TestFlight (internal testers only)
+# Two jobs, so that code from the build branch never runs next to the signing
+# keys. The archive job builds the given branch's PocketGemma-source.zip
+# without signing and without secrets. The upload job runs only this file's
+# scripts (.github/testflight, from the branch this workflow runs on), waits
+# for approval in the testflight environment, signs at export with the paid
+# team's cloud-managed certificate and uploads. See .github/testflight/README.md.
+on:
+  # Temporary: checks the archive job (no secrets, nothing uploaded) on this
+  # branch before the workflow reaches main. Replaced by workflow_dispatch.
+  push:
+    branches: [claude/project-thread-48a0re]
+    paths: [.github/workflows/testflight.yml]
+permissions:
+  contents: read
+concurrency:
+  group: pocket-ai-testflight
+  cancel-in-progress: false
+jobs:
+  archive:
+    name: Archive without signing (no secrets)
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      source: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.archive.outputs.version }}
+      build: ${{ steps.archive.outputs.build }}
+      sha256: ${{ steps.archive.outputs.sha256 }}
+      xcode: ${{ steps.archive.outputs.xcode }}
+    steps:
+      - name: Check out the branch to build
+        uses: actions/checkout@v4
+        with:
+          ref: 98a943a2815c8b270326c43b688997ddec40f0d5
+      - name: Check out this workflow's scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .testflight-ci
+          sparse-checkout: .github/testflight
+      - id: source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: unzip -o PocketGemma-source.zip
+      - run: unzip -o NativeRuntime-source.zip
+      - name: Fetch the pinned native runtime
+        uses: ./.github/native-runtime
+      - name: Verify six binaries and configure app
+        run: |
+          python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
+          python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
+      - run: brew install xcodegen
+      - name: Archive the app without signing
+        id: archive
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source scripts/select-xcode.sh
+          xcodegen generate --spec project.yml
+          mkdir -p build/testflight
+          xcodebuild archive \
+            -project PocketGemma.xcodeproj \
+            -scheme PocketGemma \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -archivePath build/PocketGemma.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' 2>&1 | tee build/testflight-archive.log
+          bash .testflight-ci/.github/testflight/finish-archive.sh build/PocketGemma.xcarchive
+          properties=build/PocketGemma.xcarchive/Info.plist
+          version="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$properties")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$properties")"
+          ditto -c -k --keepParent build/PocketGemma.xcarchive build/testflight/PocketGemma.xcarchive.zip
+          sha="$(shasum -a 256 build/testflight/PocketGemma.xcarchive.zip | cut -d' ' -f1)"
+          {
+            echo "version=$version"
+            echo "build=$build"
+            echo "sha256=$sha"
+            echo "xcode=$DEVELOPER_DIR"
+          } >> "$GITHUB_OUTPUT"
+          echo "Archived $version ($build), zip SHA-256 $sha"
+      - name: Hand the unsigned archive to the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive
+          path: build/testflight/PocketGemma.xcarchive.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Preserve the archive log on success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketGemma-TestFlight-Archive-Log
+          path: build/testflight-archive.log
+          if-no-files-found: ignore
+          retention-days: 3
+
