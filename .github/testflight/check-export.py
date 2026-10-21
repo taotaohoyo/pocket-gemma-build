@@ -8,7 +8,7 @@ variant), and every entitlement the code claims is one the profile grants.
 With --adhoc it checks only the entitlements sign-archive.sh wrote, before
 the export. Prints check names and results only: never the team ID, the
 developer's name or the profile's name, because the job log is public.
-Usage: TEAM_ID=<team> check-export.py <ipa | .app> --memory <eva+iml|eva|iml|none> [--adhoc]
+Usage: TEAM_ID=<team> BUNDLE_ID=<app identifier> check-export.py <ipa | .app> --memory <eva+iml|eva|iml|none> [--adhoc]
 """
 import argparse
 import datetime
@@ -26,7 +26,6 @@ IML = 'com.apple.developer.kernel.increased-memory-limit'
 DEBUG_LIMIT = 'com.apple.developer.kernel.increased-debugging-memory-limit'
 MEMORY = {'eva+iml': {EVA, IML}, 'eva': {EVA}, 'iml': {IML}, 'none': set()}
 SHORT = {EVA: 'Extended Virtual Addressing', IML: 'Increased Memory Limit'}
-APP_ID = 'app.pocketgemma.personal'
 
 
 def granted(profile, key, value):
@@ -47,7 +46,7 @@ def granted(profile, key, value):
     return matches(allowed, value)
 
 
-def check_target(name, identifier, is_app, entitlements, team, memory, profile=None, signature=None, now=None):
+def check_target(name, identifier, is_app, entitlements, team, memory, app_id, profile=None, signature=None, now=None):
     """Returns [(ok, target, check)] for one signed bundle. profile and
     signature are None for an ad hoc signature."""
     rows = []
@@ -55,9 +54,9 @@ def check_target(name, identifier, is_app, entitlements, team, memory, profile=N
         rows.append((bool(ok), name, check))
 
     if is_app:
-        add(identifier == APP_ID, f'bundle identifier is {APP_ID}')
+        add(identifier == app_id, f'bundle identifier is {app_id}')
     else:
-        add(identifier.startswith(APP_ID + '.'), 'extension identifier is under the app')
+        add(identifier == app_id + '.activity', f'extension identifier is {app_id}.activity')
     add(entitlements.get('application-identifier') == f'{team}.{identifier}', 'application-identifier = TEAM.<bundle identifier>')
     add(entitlements.get('com.apple.developer.team-identifier') == team, 'team-identifier = TEAM')
     wanted = memory if is_app else set()
@@ -135,6 +134,9 @@ def main():
     team = os.environ.get('TEAM_ID', '').strip()
     if not team:
         sys.exit('the APPLE_TEAM_ID secret is missing')
+    app_id = os.environ.get('BUNDLE_ID', '').strip()
+    if not app_id:
+        sys.exit('BUNDLE_ID (the app\'s App ID) is missing')
     memory = MEMORY[args.memory]
 
     work = None
@@ -158,11 +160,11 @@ def main():
             signature = read_signature(bundle)
             if args.adhoc:
                 rows.append((signature['adhoc'], name, 'ad hoc signature (before export)'))
-                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory)
+                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory, app_id)
             else:
                 profile = read_profile(bundle)
                 rows.append((profile is not None, name, 'embedded App Store profile'))
-                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory,
+                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory, app_id,
                                      profile or {}, signature)
         verify = run(['codesign', '--verify', '--deep', '--strict', app])
         rows.append((verify.returncode == 0, os.path.basename(app), 'codesign --verify --deep --strict'))

@@ -19,6 +19,12 @@ on:
         default: eva+iml
 permissions:
   contents: read
+env:
+  # The paid team's App IDs: the app, and <app>.activity for the Live Activity
+  # extension. PocketGemma-source.zip keeps app.pocketgemma.personal for the
+  # unsigned SideInstaller and AltStore builds; set-bundle-id.py changes it
+  # for this build only. Not a secret.
+  BUNDLE_ID: com.fielua.app
 concurrency:
   group: pocket-ai-testflight
   cancel-in-progress: false
@@ -61,6 +67,8 @@ jobs:
           python3 NativeRuntime/native_artifact.py zip build/native-artifact/PocketGemma-NativeRuntime.zip
           python3 NativeRuntime/configure-app.py build/native-artifact/PocketGemma-NativeRuntime.zip
       - run: brew install xcodegen
+      - name: Use the paid team's App IDs for this build
+        run: python3 .testflight-ci/.github/testflight/set-bundle-id.py "$BUNDLE_ID"
       - name: Archive the app without signing
         id: archive
         timeout-minutes: 30
@@ -81,6 +89,17 @@ jobs:
             CODE_SIGN_IDENTITY='' 2>&1 | tee build/testflight-archive.log
           bash .testflight-ci/.github/testflight/finish-archive.sh build/PocketGemma.xcarchive
           properties=build/PocketGemma.xcarchive/Info.plist
+          app=build/PocketGemma.xcarchive/Products/Applications/PocketGemma.app
+          # expect_id <plist> <key> <identifier>
+          expect_id() {
+            local actual
+            actual="$(/usr/libexec/PlistBuddy -c "Print :$2" "$1")"
+            [[ "$actual" == "$3" ]] || { echo "$1 has $actual, expected $3"; exit 1; }
+          }
+          expect_id "$app/Info.plist" CFBundleIdentifier "$BUNDLE_ID"
+          expect_id "$app/PlugIns/PocketActivity.appex/Info.plist" CFBundleIdentifier "$BUNDLE_ID.activity"
+          expect_id "$properties" ApplicationProperties:CFBundleIdentifier "$BUNDLE_ID"
+          echo "Bundle identifiers: $BUNDLE_ID and $BUNDLE_ID.activity"
           version="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$properties")"
           build="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$properties")"
           ditto -c -k --keepParent build/PocketGemma.xcarchive build/testflight/PocketGemma.xcarchive.zip
