@@ -6,7 +6,7 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, core]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, core]
 permissions:
   contents: read
 jobs:
@@ -42,6 +42,7 @@ jobs:
           UI_SEND_ONLY: ${{ inputs.scope == 'send-motion' && '1' || '0' }}
           UI_JUMP_ONLY: ${{ inputs.scope == 'jump-motion' && '1' || '0' }}
           UI_HISTORY_ONLY: ${{ inputs.scope == 'history' && '1' || '0' }}
+          UI_ISLAND_ONLY: ${{ inputs.scope == 'island' && '1' || '0' }}
           UI_MARKDOWN_ONLY: ${{ inputs.scope == 'markdown' && '1' || '0' }}
           UI_CHARTS_ONLY: ${{ inputs.scope == 'charts' && '1' || '0' }}
           UI_CHART_READING_ONLY: ${{ inputs.scope == 'chart-reading' && '1' || '0' }}
