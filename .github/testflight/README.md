@@ -1,6 +1,6 @@
 # TestFlight へのアップロード
 
-`testflight.yml` は、作業ブランチの PocketGemma-source.zip をビルドし、有料チームで署名して TestFlight（内部テスターだけ）に上げます。署名の鍵は GitHub の Environment `testflight` にだけ置き、公開リポジトリにも Releases にも Actions の成果物にも出しません。
+`testflight.yml` は、作業ブランチの PocketGemma-source.zip をビルドし、有料チームで署名して TestFlight に上げます。外部テスターにも出せる形で上げるか、内部テスターだけにするかは、実行するときに選びます。署名の鍵は GitHub の Environment `testflight` にだけ置き、公開リポジトリにも Releases にも Actions の成果物にも出しません。
 
 ## 流れ
 
@@ -15,7 +15,7 @@
    - `sign-archive.sh` が、アプリと Live Activity 拡張を、それぞれの識別子の権限で ad hoc 署名します。アプリには、`memory_entitlements` で選んだメモリの権限も付けます。拡張には付けません。署名のあと、`check-export.py --adhoc` で中身を確かめます。
    - `export-upload.sh` が、App Store Connect の API キーで、有料チームのクラウド管理の配布証明書を使って書き出します。書き出しは2回です。
      1. ランナーの上に IPA を作り、`check-export.py` で確かめてから消します。
-     2. 確かめが通ったときだけ、同じアーカイブと同じ設定で、TestFlight に直接上げます（`testFlightInternalTestingOnly`）。
+     2. 確かめが通ったときだけ、同じアーカイブと同じ設定で、TestFlight に直接上げます。`testers` が `internal-only` のときだけ、`testFlightInternalTestingOnly` を付けます。
    - `check-export.py` が確かめること（アプリと拡張のそれぞれ）
      - App ID（`application-identifier`）とチームが、Bundle ID と Team ID に合っている。
      - メモリの権限が、選んだとおりにアプリだけに付いている。拡張には付いていない。デバッグ用の Increased Debugging Memory Limit はどこにも付いていない。
@@ -32,7 +32,7 @@
    - アプリ：`com.fielua.app`（ワークフローの `BUNDLE_ID`）
    - Live Activity の拡張：`com.fielua.app.activity`
    - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張の App ID ではオンにしません。
-2. App Store Connect で、新規 App を作ります。Bundle ID は `com.fielua.app` にします。名前は App Store 全体で重ならないものにします（今は Fielua）。iPhone のホーム画面の名前は、アプリの設定どおり「Pocket AI」です。
+2. App Store Connect で、新規 App を作ります。Bundle ID は `com.fielua.app` にします。名前は App Store 全体で重ならないものにします（今は Fielua）。iPhone のホーム画面の名前は、アプリの設定どおり（1.0.123 から「Fielua」）です。
 3. TestFlight の内部テスターのグループを作り、自分を入れます。
 4. App Store Connect の「ユーザとアクセス」から「統合」、「App Store Connect API」を開きます。チームキーを **Admin** のアクセスで作ります。
    - クラウド管理の配布証明書を API キーで使うには、Admin が要ります。
@@ -58,8 +58,10 @@
 1. Actions の「Upload a build to TestFlight」を、main で手動実行します。
    - `source_ref` には、ビルドするブランチかコミットを入れます。
    - `memory_entitlements` は、ふだんは `eva+iml` のままにします。片方だけの効き目を比べるときは `eva` か `iml`、付けない版は `none` にします。選んだ権限が App ID でオンになっていないと、書き出しか確かめで止まり、何も上がりません。
+   - `testers` は、ふだんは `internal-and-external` のままにします。内部テスターはどちらでも使えます。`internal-only` で上げたビルドは、あとから外部グループにも App Review にも出せません（上げたあとでは変えられません）。外部に出すには、新しいビルド番号で上げ直すことになります。
 2. archive ジョブが終わると、upload ジョブが承認待ちになります。「Review deployments」で `testflight` を承認します。
-3. App Store Connect の処理が終わると、TestFlight アプリに出ます。
+3. App Store Connect の処理が終わると、内部テスターの TestFlight アプリに出ます。
+4. 外部テスターに出すときは、App Store Connect の TestFlight で外部グループにビルドを追加し、TestFlight App Review に提出します。審査は版（`MARKETING_VERSION`）ごとで、最初のビルドは必ず審査があります。同じ版のあとのビルドは、審査なしで通ることもあります。ワークフローは提出まではしません。
 
 ## メモリの権限について
 

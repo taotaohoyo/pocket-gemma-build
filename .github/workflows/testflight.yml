@@ -1,4 +1,4 @@
-name: Upload a build to TestFlight (internal testers only)
+name: Upload a build to TestFlight
 # Two jobs, so that code from the build branch never runs next to the signing
 # keys. The archive job builds the given branch's PocketGemma-source.zip
 # without signing and without secrets. The upload job runs only this file's
@@ -17,6 +17,12 @@ on:
         type: choice
         options: [eva+iml, eva, iml, none]
         default: eva+iml
+      testers:
+        description: Who the build can go to. internal-only builds can never be added to an external group or sent to App Review, so they need a new build number to reach external testers
+        required: true
+        type: choice
+        options: [internal-and-external, internal-only]
+        default: internal-and-external
 permissions:
   contents: read
 env:
@@ -166,6 +172,7 @@ jobs:
       - name: Export with the paid team's certificate, check, and upload
         env:
           MEMORY: ${{ inputs.memory_entitlements }}
+          TESTERS: ${{ inputs.testers }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -183,9 +190,13 @@ jobs:
           BUILD: ${{ needs.archive.outputs.build }}
           SOURCE: ${{ needs.archive.outputs.source }}
           MEMORY: ${{ inputs.memory_entitlements }}
+          TESTERS: ${{ inputs.testers }}
         run: |
           {
-            echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight (internal testers only)."
+            echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight for $TESTERS testers."
             echo "Memory entitlements on the app: $MEMORY (checked in the signed app before the upload)."
+            if [[ "$TESTERS" == internal-and-external ]]; then
+              echo "External testers get it only after you add it to an external group in App Store Connect and TestFlight App Review approves it."
+            fi
             echo "App Store Connect processes the build before it shows in TestFlight."
           } | tee -a "$GITHUB_STEP_SUMMARY"
