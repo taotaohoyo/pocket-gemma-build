@@ -26,6 +26,7 @@ on:
           - e4b-photos
           - e4b-deep
           - e4b-fast
+          - web-search
           - text-and-images-xnnpack
           - images-xnnpack
           - images-builtin
@@ -41,7 +42,7 @@ jobs:
     # This changes no inference timeout and starts no full image suite.
     # chart-reply runs five real replies (E2B and E4B on CPU) after that setup.
     # chart-talk, chart-recall, chart-sheet, chart-final and chart-placeholder run E2B chats of up to four turns (30 minutes).
-    # qwen-text, qwen-files, qwen-gpu, files, e4b-photos, e4b-deep and e4b-fast give their probe
+    # qwen-text, qwen-files, qwen-gpu, files, e4b-photos, e4b-deep, e4b-fast and web-search give their probe
     # the watchdog's maximum, 30 minutes; every probe is still bounded by its
     # own watchdog limit.
     timeout-minutes: 65
