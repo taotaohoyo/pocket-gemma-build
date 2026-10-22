@@ -3,15 +3,22 @@
 # Connect with the paid team's cloud-managed distribution certificate, signed
 # in with the App Store Connect API key, in two passes with the same options:
 # first to an IPA on the runner that check-export.py checks (App ID, team,
-# profile, memory entitlements) and then deletes, then straight to TestFlight
-# for internal testers only. Nothing is uploaded unless the check passes. No
-# IPA, profile or full log leaves the runner; the public job log shows only
-# filtered, redacted lines.
-# Usage: TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 MEMORY [XCODE] export-upload.sh <xcarchive>
+# profile, memory entitlements) and then deletes, then straight to TestFlight.
+# TESTERS internal-only marks the build TestFlight Internal Only (never an
+# external group or App Review); internal-and-external leaves both open, and
+# nothing reaches external testers until it is added to an external group
+# and passes TestFlight App Review. Nothing is uploaded unless the check
+# passes. No IPA, profile or full log leaves the runner; the public job log
+# shows only filtered, redacted lines.
+# Usage: TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 MEMORY TESTERS [XCODE] export-upload.sh <xcarchive>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 archive="$1"
 : "${MEMORY:?which memory entitlements the archive was signed with}"
+case "${TESTERS:-}" in
+  internal-only|internal-and-external) ;;
+  *) echo "TESTERS must be internal-only or internal-and-external, not '${TESTERS:-}'"; exit 64 ;;
+esac
 : "${TEAM_ID:?the APPLE_TEAM_ID secret is missing}"
 : "${ASC_KEY_ID:?the ASC_KEY_ID secret is missing}"
 : "${ASC_ISSUER_ID:?the ASC_ISSUER_ID secret is missing}"
@@ -56,8 +63,9 @@ with open(sys.argv[1], 'wb') as handle:
         'destination': sys.argv[2],
         'signingStyle': 'automatic',
         'teamID': os.environ['TEAM_ID'],
-        # The build can go to internal testers only, never to App Review.
-        'testFlightInternalTestingOnly': True,
+        # internal-only: internal testers only, never external groups or
+        # App Review. The flag can't be changed after the upload.
+        'testFlightInternalTestingOnly': os.environ['TESTERS'] == 'internal-only',
         'manageAppVersionAndBuildNumber': False,
         'uploadSymbols': True,
     }, handle)
