@@ -106,6 +106,12 @@ jobs:
           expect_id "$app/PlugIns/PocketActivity.appex/Info.plist" CFBundleIdentifier "$BUNDLE_ID.activity"
           expect_id "$properties" ApplicationProperties:CFBundleIdentifier "$BUNDLE_ID"
           echo "Bundle identifiers: $BUNDLE_ID and $BUNDLE_ID.activity"
+          # The Apple Watch app, in sources from 1.1.0 (149) on.
+          if [[ -d "$app/Watch/PocketWatch.app" ]]; then
+            expect_id "$app/Watch/PocketWatch.app/Info.plist" CFBundleIdentifier "$BUNDLE_ID.watchkitapp"
+            expect_id "$app/Watch/PocketWatch.app/Info.plist" WKCompanionAppBundleIdentifier "$BUNDLE_ID"
+            echo "Apple Watch app: $BUNDLE_ID.watchkitapp"
+          fi
           version="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$properties")"
           build="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$properties")"
           ditto -c -k --keepParent build/PocketGemma.xcarchive build/testflight/PocketGemma.xcarchive.zip

@@ -5,7 +5,7 @@
 ## 流れ
 
 1. **archive ジョブ（鍵なし）**
-   - `set-bundle-id.py` が、このジョブのチェックアウトの中だけで、Bundle ID を有料チームの App ID に変えます。アプリは `BUNDLE_ID`（`com.fielua.app`）、Live Activity の拡張は `com.fielua.app.activity` です。PocketGemma-source.zip は `app.pocketgemma.personal` のままなので、SideInstaller と AltStore 用の署名なしビルドは変わりません。
+   - `set-bundle-id.py` が、このジョブのチェックアウトの中だけで、Bundle ID を有料チームの App ID に変えます。アプリは `BUNDLE_ID`（`com.fielua.app`）、Live Activity の拡張は `com.fielua.app.activity` です。Apple Watch のアプリがあるソースでは、Watch アプリを `com.fielua.app.watchkitapp` にし、その相手（WKCompanionAppBundleIdentifier）を `com.fielua.app` にします。PocketGemma-source.zip は `app.pocketgemma.personal` のままなので、SideInstaller と AltStore 用の署名なしビルドは変わりません。
    - 指定したブランチを、署名なしで `xcodebuild archive` します。アーカイブのアプリと拡張が新しい ID になっていることを確かめます。
    - `finish-archive.sh` が、`scripts/build-ios.sh` と同じランタイムの記録とライセンスを入れます。そのうえで、App Store 用のプライバシーマニフェスト（`PrivacyInfo.xcprivacy`）を入れ、ソースの `check-ipa.py` で確かめます。
    - 署名なしのアーカイブを、1日だけの成果物として次のジョブに渡します。中身は、今までの署名なし IPA と同じ種類のものです。
@@ -31,7 +31,8 @@
 1. Developer サイトの Identifiers で、Explicit の App ID を2つ登録します。
    - アプリ：`com.fielua.app`（ワークフローの `BUNDLE_ID`）
    - Live Activity の拡張：`com.fielua.app.activity`
-   - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張の App ID ではオンにしません。
+   - Apple Watch のアプリ（1.1.0 (149) から）：`com.fielua.app.watchkitapp`
+   - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張と Watch アプリの App ID ではオンにしません。
 2. App Store Connect で、新規 App を作ります。Bundle ID は `com.fielua.app` にします。名前は App Store 全体で重ならないものにします（今は Fielua）。iPhone のホーム画面の名前は、アプリの設定どおり（1.0.123 から「Fielua」）です。
 3. TestFlight の内部テスターのグループを作り、自分を入れます。
 4. App Store Connect の「ユーザとアクセス」から「統合」、「App Store Connect API」を開きます。チームキーを **Admin** のアクセスで作ります。
