@@ -1,10 +1,11 @@
 """Checks that a signed Pocket AI agrees with itself before it is uploaded.
 
-For the app and each extension it compares the signature's entitlements,
-the embedded App Store profile and the bundle identifier: the App ID and
-team match, the memory entitlements are exactly the ones asked for and only
-on the app (never on the Live Activity extension, never the debugging
-variant), and every entitlement the code claims is one the profile grants.
+For the app, each extension and the Apple Watch app it compares the
+signature's entitlements, the embedded App Store profile and the bundle
+identifier: the App ID and team match, the memory entitlements are exactly
+the ones asked for and only on the app (never on the Live Activity extension
+or the watch app, never the debugging variant), and every entitlement the
+code claims is one the profile grants.
 With --adhoc it checks only the entitlements sign-archive.sh wrote, before
 the export. Prints check names and results only: never the team ID, the
 developer's name or the profile's name, because the job log is public.
@@ -55,6 +56,8 @@ def check_target(name, identifier, is_app, entitlements, team, memory, app_id, p
 
     if is_app:
         add(identifier == app_id, f'bundle identifier is {app_id}')
+    elif name.endswith('.app'):
+        add(identifier == app_id + '.watchkitapp', f'Apple Watch app identifier is {app_id}.watchkitapp')
     else:
         add(identifier == app_id + '.activity', f'extension identifier is {app_id}.activity')
     add(entitlements.get('application-identifier') == f'{team}.{identifier}', 'application-identifier = TEAM.<bundle identifier>')
@@ -151,6 +154,7 @@ def main():
     try:
         rows = []
         targets = [(app, True)] + [(path, False) for path in sorted(glob.glob(os.path.join(app, 'PlugIns', '*.appex')))]
+        targets += [(path, False) for path in sorted(glob.glob(os.path.join(app, 'Watch', '*.app')))]
         if len(targets) < 2:
             rows.append((False, 'PocketGemma.app', 'Live Activity extension present'))
         for bundle, is_app in targets:

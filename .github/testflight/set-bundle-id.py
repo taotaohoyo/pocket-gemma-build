@@ -2,8 +2,10 @@
 
 PocketGemma-source.zip keeps app.pocketgemma.personal, which the unsigned
 SideInstaller and AltStore builds use. In the archive job's checkout only,
-this sets the app to the given identifier and the Live Activity extension to
-<identifier>.activity, and points the source's IPA check at it. Everything
+this sets the app to the given identifier, the Live Activity extension to
+<identifier>.activity and, when the source has one, the Apple Watch app to
+<identifier>.watchkitapp with the app as its companion, and points the
+source's IPA check at it. Everything
 else follows from PRODUCT_BUNDLE_IDENTIFIER (the continued-download task
 identifiers) or from Bundle.main at run time. Each change must match exactly
 once, so a change in the source stops the build instead of passing silently.
@@ -37,11 +39,20 @@ def main():
     for suffix in ('', '.activity'):
         text = replace_once(text, 'project.yml', r'^\s*PRODUCT_BUNDLE_IDENTIFIER:\s*{}\s*$',
                             SOURCE_ID + suffix, identifier + suffix)
+    # The Apple Watch app (1.1.0 (149) on): its own identifier, and the app's
+    # as the companion it belongs to.
+    watch = 'WKCompanionAppBundleIdentifier' in text
+    if watch:
+        text = replace_once(text, 'project.yml', r'^\s*PRODUCT_BUNDLE_IDENTIFIER:\s*{}\s*$',
+                            SOURCE_ID + '.watchkitapp', identifier + '.watchkitapp')
+        text = replace_once(text, 'project.yml', r'^\s*WKCompanionAppBundleIdentifier:\s*{}\s*$',
+                            SOURCE_ID, identifier)
     project.write_text(text)
 
     check = Path('scripts/check-ipa.py')
     check.write_text(replace_once(check.read_text(), 'scripts/check-ipa.py', r'== "{}"', SOURCE_ID, identifier))
-    print(f'TestFlight bundle identifiers: app {identifier}, Live Activity {identifier}.activity')
+    print(f'TestFlight bundle identifiers: app {identifier}, Live Activity {identifier}.activity'
+          + (f', Apple Watch app {identifier}.watchkitapp' if watch else ''))
 
 
 if __name__ == '__main__':
