@@ -33,8 +33,7 @@ on:
           - images-builtin
           - reply-language-e2b
           - reply-language-e4b-current
-          - reply-language-e4b-instruction-1
-          - reply-language-e4b-instruction-2
+          - reply-language-e4b-app
         default: ui-ux-regression
 permissions:
   contents: read
