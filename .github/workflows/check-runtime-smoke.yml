@@ -34,6 +34,7 @@ on:
           - reply-language-e2b
           - reply-language-e4b-current
           - reply-language-e4b-app
+          - reply-language-e4b-app-rest
         default: ui-ux-regression
 permissions:
   contents: read
