@@ -24,6 +24,7 @@ on:
           - qwen-files
           - qwen-gpu
           - files
+          - video
           - e4b-photos
           - e4b-deep
           - e4b-fast
