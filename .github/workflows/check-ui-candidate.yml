@@ -6,7 +6,7 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, wording, tidy, core]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, bloom, wording, tidy, core]
 permissions:
   contents: read
 jobs:
@@ -66,6 +66,7 @@ jobs:
           UI_SETTINGS_PERF_ONLY: ${{ inputs.scope == 'settings-perf' && '1' || '0' }}
           UI_WATCH_ONLY: ${{ inputs.scope == 'watch' && '1' || '0' }}
           UI_FIRST_LAUNCH_ONLY: ${{ inputs.scope == 'first-launch' && '1' || '0' }}
+          UI_BLOOM_ONLY: ${{ inputs.scope == 'bloom' && '1' || '0' }}
           UI_WORDING_ONLY: ${{ inputs.scope == 'wording' && '1' || '0' }}
           UI_TIDY_ONLY: ${{ inputs.scope == 'tidy' && '1' || '0' }}
         run: |
