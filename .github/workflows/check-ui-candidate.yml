@@ -6,7 +6,7 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, bloom, wording, tidy, launch-chat, config-sheet, languages, watch-languages, send-log, keyboard-settings, locked-model, settings-keyboard-open, core]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, bloom, wording, tidy, launch-chat, config-sheet, languages, watch-languages, send-log, keyboard-settings, locked-model, new-models, settings-keyboard-open, core]
 permissions:
   contents: read
 jobs:
@@ -76,6 +76,7 @@ jobs:
           UI_SEND_LOG_ONLY: ${{ inputs.scope == 'send-log' && '1' || '0' }}
           UI_KEYBOARD_SETTINGS_ONLY: ${{ inputs.scope == 'keyboard-settings' && '1' || '0' }}
           UI_LOCKED_MODEL_ONLY: ${{ inputs.scope == 'locked-model' && '1' || '0' }}
+          UI_NEW_MODELS_ONLY: ${{ inputs.scope == 'new-models' && '1' || '0' }}
           UI_SETTINGS_KEYBOARD_OPEN_ONLY: ${{ inputs.scope == 'settings-keyboard-open' && '1' || '0' }}
         run: |
           set -euo pipefail

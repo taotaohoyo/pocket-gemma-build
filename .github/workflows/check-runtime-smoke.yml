@@ -47,6 +47,8 @@ on:
           - feature-language-e4b-continuation
           - feature-language-e4b-chart
           - gemma12b-text
+          - phi-text
+          - qwen35-text
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
@@ -68,6 +70,8 @@ jobs:
     # feature-language probes (web search, continuation and chart notes, 1.1.0 (195)).
     # gemma12b-text downloads the 6.88 GB 12B file and gives its one CPU
     # check at most 1500 seconds of the watchdog's 1800.
+    # phi-text (one reasoning reply on the CPU) and qwen35-text (a Japanese chat and
+    # the clean-start check, CPU) download their own 2.8 GB file, 1.1.0 (205).
     timeout-minutes: 65
     defaults:
       run:
