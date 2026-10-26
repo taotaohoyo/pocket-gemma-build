@@ -13,6 +13,7 @@ permissions:
   contents: read
 jobs:
   listing:
+    if: false  # done in run 40328132831
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -48,11 +49,10 @@ jobs:
           - { key: qwen3, repo: Qwen3-0.6B, rev: a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76, file: Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm, sha: 03e7da1eb1108b50dffaa9bb52cc7bcbad2eb0c66ca990267f480c1e545d2856 }
           - { key: qwen25, repo: Qwen2.5-1.5B-Instruct, rev: 5e6e7a58d03777898b31330a15d2e0a5a9107de3, file: Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm, sha: c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e }
           # Official alternatives, read for comparison only (not pinned).
-          - { key: alt-qwen3-int8, repo: Qwen3-0.6B, rev: main, file: Qwen3-0.6B.litertlm, sha: '' }
           - { key: alt-qwen3-mixed-int4, repo: Qwen3-0.6B, rev: main, file: qwen3_0_6b_mixed_int4.litertlm, sha: '' }
-          - { key: alt-e2b-web, repo: gemma-4-E2B-it-litert-lm, rev: main, file: gemma-4-E2B-it-web.litertlm, sha: '' }
-          - { key: alt-e4b-web, repo: gemma-4-E4B-it-litert-lm, rev: main, file: gemma-4-E4B-it-web.litertlm, sha: '' }
-          - { key: alt-12b-web, repo: gemma-4-12B-it-litert-lm, rev: main, file: gemma-4-12B-it-web.litertlm, sha: '' }
+          - { key: alt-e2b-gpu, repo: gemma-4-E2B-it-litert-lm, rev: main, file: gemma-4-E2B-it-gpu.litertlm, sha: '' }
+          - { key: alt-e4b-gpu, repo: gemma-4-E4B-it-litert-lm, rev: main, file: gemma-4-E4B-it-gpu.litertlm, sha: '' }
+          - { key: alt-12b-gpu, repo: gemma-4-12B-it-litert-lm, rev: main, file: gemma-4-12B-it-gpu.litertlm, sha: '' }
     name: survey ${{ matrix.key }}
     steps:
       - uses: actions/checkout@v4

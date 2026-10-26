@@ -88,7 +88,9 @@ def describe(path):
             totals[key][1] += n
             totals[key][2] += 1
             if n >= MIN_FAMILY_ELEMENTS:
-                name = re.sub(r'\d+', '#', (tensor.Name() or b'').decode(errors='replace'))[:90]
+                name = re.sub(r'\d+', '#', (tensor.Name() or b'').decode(errors='replace'))
+                if len(name) > 120:  # keep the start and the part that names the weight
+                    name = name[:40] + '…' + name[-79:]
                 families[(name,) + key][0] += sizes[bi]
                 families[(name,) + key][1] += 1
         for o in range(graph.OperatorsLength()):
@@ -139,12 +141,38 @@ def describe(path):
     sys.stdout.flush()
 
 
+def extract(path, out, stream):
+    """Copies each TFLite section out using only the header."""
+    from litert_lm_builder import litertlm_peek
+    metadata = litertlm_peek.read_litertlm_header(path, stream)
+    sections = metadata.SectionMetadata()
+    with open(path, 'rb') as f:
+        for i in range(sections.ObjectsLength()):
+            section = sections.Objects(i)
+            begin, end, kind = section.BeginOffset(), section.EndOffset(), section.DataType()
+            model_type = litertlm_peek.get_model_type(section)
+            print(f'Section {i}: type {kind} model_type {model_type} bytes {end - begin}', file=stream)
+            if kind != 3:  # AnySectionDataType.TFLiteModel
+                continue
+            f.seek(begin)
+            with open(os.path.join(out, f'Section{i}_{model_type}.tflite'), 'wb') as g:
+                left = end - begin
+                while left:
+                    chunk = f.read(min(left, 64 << 20))
+                    g.write(chunk)
+                    left -= len(chunk)
+
+
 def main():
     from litert_lm_builder import litertlm_peek
     path, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
     header = io.StringIO()
-    litertlm_peek.peek_litertlm_file(path, out, header)
+    try:
+        litertlm_peek.peek_litertlm_file(path, out, header)
+    except Exception as e:  # a section this builder can't print: copy the graphs out directly
+        print('peek stopped:', repr(e))
+        extract(path, out, header)
     for line in header.getvalue().splitlines():
         if 'jinja_prompt_template' in line or 'prefill_input_name' in line or 'prefill_output_name' in line \
                 or 'decode_input_name' in line or 'decode_output_name' in line:
