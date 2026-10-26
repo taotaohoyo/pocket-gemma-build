@@ -36,6 +36,7 @@ on:
           - reply-language-e4b-current
           - reply-language-e4b-app
           - reply-language-e4b-app-rest
+          - gemma12b-text
         default: ui-ux-regression
 permissions:
   contents: read
@@ -52,6 +53,8 @@ jobs:
     # the watchdog's maximum, 30 minutes; every probe is still bounded by its
     # own watchdog limit. The reply-language probes give their replies at most 1500 seconds
     # of the watchdog's 1800 (sixteen short replies per system message).
+    # gemma12b-text downloads the 6.88 GB 12B file and gives its one CPU
+    # check at most 1500 seconds of the watchdog's 1800.
     timeout-minutes: 65
     defaults:
       run:
