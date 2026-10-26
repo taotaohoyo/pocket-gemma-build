@@ -1,0 +1,21 @@
+name: Pin Phi-4-mini-reasoning and Qwen3.5 4B
+# Prints each file's newest revision, size and SHA-256 for the app's pins
+# (1.1.0 (205)), without downloading the files.
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/pin-new-models.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 tools/inspect-new-models/resolve.py pins.env \
+            'litert-community/Phi-4-mini-reasoning:model.litertlm:PHI' \
+            'litert-community/Qwen3.5-4B:Qwen3.5-4B_mixed_int4.litertlm:QWEN35'
+          cat pins.env
