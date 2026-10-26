@@ -23,6 +23,11 @@ on:
         type: choice
         options: [internal-and-external, internal-only]
         default: internal-and-external
+      beta_group:
+        description: TestFlight group to put the build in once App Store Connect has processed it, by its name (for example 自分用). Empty only uploads; every run lists the app's groups. An external group still needs TestFlight App Review, which this workflow never submits
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 env:
@@ -144,7 +149,9 @@ jobs:
     name: Sign at export and upload to TestFlight
     needs: archive
     runs-on: macos-26
-    timeout-minutes: 30
+    # Up to 45 minutes of it wait for App Store Connect to process the build
+    # when a group is chosen.
+    timeout-minutes: 75
     # Holds the keys. Its protection rules (required reviewer, main only) are
     # set in the repository settings; see .github/testflight/README.md.
     environment: testflight
@@ -170,6 +177,14 @@ jobs:
           cd "$RUNNER_TEMP/archive"
           echo "$EXPECTED  PocketGemma.xcarchive.zip" | shasum -a 256 -c -
           ditto -x -k PocketGemma.xcarchive.zip .
+      - name: List the TestFlight groups and check the chosen one
+        env:
+          GROUP: ${{ inputs.beta_group }}
+          TESTERS: ${{ inputs.testers }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: python3 .github/testflight/beta-group.py check --bundle-id "$BUNDLE_ID" --testers "$TESTERS" --group "$GROUP"
       - name: Sign ad hoc with each target's entitlements
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -186,6 +201,16 @@ jobs:
           APPLE_TEAM_NAME: ${{ secrets.APPLE_TEAM_NAME }}
           XCODE: ${{ needs.archive.outputs.xcode }}
         run: bash .github/testflight/export-upload.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive"
+      - name: Put the build in the chosen TestFlight group
+        if: inputs.beta_group != ''
+        env:
+          GROUP: ${{ inputs.beta_group }}
+          VERSION: ${{ needs.archive.outputs.version }}
+          BUILD: ${{ needs.archive.outputs.build }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: python3 .github/testflight/beta-group.py add --bundle-id "$BUNDLE_ID" --group "$GROUP" --version "$VERSION" --build "$BUILD" --wait-minutes 45
       - name: Remove the key and the signed archive
         if: always()
         run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/export" "$RUNNER_TEMP/export-check" "$RUNNER_TEMP"/ExportOptions-*.plist "$RUNNER_TEMP"/export-*.log
@@ -197,10 +222,14 @@ jobs:
           SOURCE: ${{ needs.archive.outputs.source }}
           MEMORY: ${{ inputs.memory_entitlements }}
           TESTERS: ${{ inputs.testers }}
+          GROUP: ${{ inputs.beta_group }}
         run: |
           {
             echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight for $TESTERS testers."
             echo "Memory entitlements on the app: $MEMORY (checked in the signed app before the upload)."
+            if [[ -n "$GROUP" ]]; then
+              echo "TestFlight group: $GROUP (the build was added once App Store Connect had processed it)."
+            fi
             if [[ "$TESTERS" == internal-and-external ]]; then
               echo "External testers get it only after you add it to an external group in App Store Connect and TestFlight App Review approves it."
             fi
