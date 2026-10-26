@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: ''
+      whats_new:
+        description: What to Test (テスト内容) for testers, written to the build in every language of the app's test information as soon as App Store Connect lists it. Up to 4000 characters, no emoji and no '<'; \n starts a new line. Empty leaves it blank
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 env:
@@ -67,6 +72,10 @@ jobs:
           ref: ${{ github.sha }}
           path: .testflight-ci
           sparse-checkout: .github/testflight
+      - name: Check the What to Test text before building
+        env:
+          WHATS_NEW: ${{ inputs.whats_new }}
+        run: python3 .testflight-ci/.github/testflight/beta-group.py notes
       - id: source
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - run: unzip -o PocketGemma-source.zip
@@ -150,7 +159,7 @@ jobs:
     needs: archive
     runs-on: macos-26
     # Up to 45 minutes of it wait for App Store Connect to process the build
-    # when a group is chosen.
+    # when a group or What to Test is given.
     timeout-minutes: 75
     # Holds the keys. Its protection rules (required reviewer, main only) are
     # set in the repository settings; see .github/testflight/README.md.
@@ -181,6 +190,7 @@ jobs:
         env:
           GROUP: ${{ inputs.beta_group }}
           TESTERS: ${{ inputs.testers }}
+          WHATS_NEW: ${{ inputs.whats_new }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
@@ -201,16 +211,17 @@ jobs:
           APPLE_TEAM_NAME: ${{ secrets.APPLE_TEAM_NAME }}
           XCODE: ${{ needs.archive.outputs.xcode }}
         run: bash .github/testflight/export-upload.sh "$RUNNER_TEMP/archive/PocketGemma.xcarchive"
-      - name: Put the build in the chosen TestFlight group
-        if: inputs.beta_group != ''
+      - name: Write What to Test and put the build in the chosen TestFlight group
+        if: inputs.beta_group != '' || inputs.whats_new != ''
         env:
           GROUP: ${{ inputs.beta_group }}
+          WHATS_NEW: ${{ inputs.whats_new }}
           VERSION: ${{ needs.archive.outputs.version }}
           BUILD: ${{ needs.archive.outputs.build }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-        run: python3 .github/testflight/beta-group.py add --bundle-id "$BUNDLE_ID" --group "$GROUP" --version "$VERSION" --build "$BUILD" --wait-minutes 45
+        run: python3 .github/testflight/beta-group.py finish --bundle-id "$BUNDLE_ID" --group "$GROUP" --version "$VERSION" --build "$BUILD" --wait-minutes 45
       - name: Remove the key and the signed archive
         if: always()
         run: rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/archive" "$RUNNER_TEMP/export" "$RUNNER_TEMP/export-check" "$RUNNER_TEMP"/ExportOptions-*.plist "$RUNNER_TEMP"/export-*.log
@@ -223,12 +234,16 @@ jobs:
           MEMORY: ${{ inputs.memory_entitlements }}
           TESTERS: ${{ inputs.testers }}
           GROUP: ${{ inputs.beta_group }}
+          WHATS_NEW: ${{ inputs.whats_new }}
         run: |
           {
             echo "Uploaded Pocket AI $VERSION ($BUILD) from $SOURCE to TestFlight for $TESTERS testers."
             echo "Memory entitlements on the app: $MEMORY (checked in the signed app before the upload)."
             if [[ -n "$GROUP" ]]; then
               echo "TestFlight group: $GROUP (the build was added once App Store Connect had processed it)."
+            fi
+            if [[ -n "${WHATS_NEW//[[:space:]]/}" ]]; then
+              echo "What to Test: written to the build in every language of its test information (the text is in the log of the last upload step)."
             fi
             if [[ "$TESTERS" == internal-and-external ]]; then
               echo "External testers get it only after you add it to an external group in App Store Connect and TestFlight App Review approves it."

@@ -5,6 +5,7 @@
 ## 流れ
 
 1. **archive ジョブ（鍵なし）**
+   - `whats_new`（テスト内容）を入れたときは、ビルドの前に `beta-group.py notes` が文面を確かめます。4000 文字まで、絵文字と `<` はなし（App Store Connect が受け付けないため）です。合わないときは、ここで止まり、何もビルドしません。確かめた文面はログに出ます。
    - `set-bundle-id.py` が、このジョブのチェックアウトの中だけで、Bundle ID を有料チームの App ID に変えます。アプリは `BUNDLE_ID`（`com.fielua.app`）、Live Activity の拡張は `com.fielua.app.activity` です。Apple Watch のアプリがあるソースでは、Watch アプリを `com.fielua.app.watchkitapp` にし、その相手（WKCompanionAppBundleIdentifier）を `com.fielua.app` にします。PocketGemma-source.zip は `app.pocketgemma.personal` のままなので、SideInstaller と AltStore 用の署名なしビルドは変わりません。
    - 指定したブランチを、署名なしで `xcodebuild archive` します。アーカイブのアプリと拡張が新しい ID になっていることを確かめます。
    - `finish-archive.sh` が、`scripts/build-ios.sh` と同じランタイムの記録とライセンスを入れます。そのうえで、App Store 用のプライバシーマニフェスト（`PrivacyInfo.xcprivacy`）を入れ、ソースの `check-ipa.py` で確かめます。
@@ -12,7 +13,7 @@
 2. **upload ジョブ（Environment `testflight`、承認が要る）**
    - このワークフローがあるブランチ（main）の `.github/testflight` のスクリプトだけを使います。ビルドしたブランチのコードは、鍵と同じジョブでは動かしません。
    - アーカイブの SHA-256 を確かめます。
-   - `beta-group.py check` が、アプリの TestFlight グループ（名前と、内部か外部か）をログに出します。`beta_group` でグループを選んだときは、そのグループがあることと、ビルドを入れられること（`internal-only` のビルドは外部グループに入れられない）を、署名とアップロードの前に確かめます。
+   - `beta-group.py check` が、テスト内容の文面をもう一度確かめ、アプリの TestFlight グループ（名前と、内部か外部か）をログに出します。`beta_group` でグループを選んだときは、そのグループがあることと、ビルドを入れられること（`internal-only` のビルドは外部グループに入れられない）を、署名とアップロードの前に確かめます。
    - `sign-archive.sh` が、アプリと Live Activity 拡張を、それぞれの識別子の権限で ad hoc 署名します。アプリには、`memory_entitlements` で選んだメモリの権限も付けます。拡張には付けません。署名のあと、`check-export.py --adhoc` で中身を確かめます。
    - `export-upload.sh` が、App Store Connect の API キーで、有料チームのクラウド管理の配布証明書を使って書き出します。書き出しは2回です。
      1. ランナーの上に IPA を作り、`check-export.py` で確かめてから消します。
@@ -23,7 +24,12 @@
      - 埋め込まれたプロファイルが、そのチームの App Store 用（端末の一覧なし、TestFlight 可、期限内）である。
      - 署名に入った権限が、すべてプロファイルで許されている。選んだメモリの権限を、プロファイルが許している。
      - 配布用の証明書で署名され、`codesign --verify --deep --strict` が通る。
-   - `beta_group` を選んだときは、アップロードのあと `beta-group.py add` が、App Store Connect の処理が終わるのを最長 45 分待ってから、ビルドをそのグループに入れます。すべてのビルドを自動で受け取る内部グループには、何もしません。外部グループは、入れたあとに TestFlight App Review への提出が要ります（ワークフローは提出しません）。グループの操作も同じ API キー（Admin）で行います。ログに出すのはグループの名前とビルドの状態だけで、テスターやメールは出しません。
+   - `beta_group` か `whats_new` を入れたときは、アップロードのあと `beta-group.py finish` が、App Store Connect の処理が終わるのを最長 45 分待ちます（グループを選ばなくても待ちます）。
+     1. ビルドが App Store Connect に出た時点で、テスト内容（What to Test）を、ビルドにある言語すべてに書きます。言語がまだないときは、テスト情報の言語（なければアプリの主な言語）で作ります。すべてのビルドを自動で受け取るグループのテスターにも、ビルドと一緒に文面が届くように、処理が終わる前に書きます。
+     2. 処理が終わったら、すべての言語に文面が入っているかを見直し、処理中に増えた言語や、処理中に断られた言語に書きます。
+     3. `beta_group` のグループにビルドを入れます。すべてのビルドを自動で受け取る内部グループには、何もしません。外部グループは、入れたあとに TestFlight App Review への提出が要ります（ワークフローは提出しません）。
+     4. テスト内容を書けなかったときは、グループに入れたうえで、ステップを失敗にします。App Store Connect の TestFlight で、そのビルドの「テスト内容」に手で入れます。
+   - テスト内容もグループの操作も、同じ API キー（Admin）で行います。ログに出すのは、グループの名前、テスト内容の文面、ビルドの状態だけで、テスターやメールは出しません。
    - ジョブのログは公開されます。そのため、出すのは `redact-log.py` で絞り、名前とメールを伏せた行だけです。署名した IPA、プロファイル、ログ全体は、ランナーの外に出しません。
 
 ## 最初に一度だけ設定すること
@@ -63,6 +69,7 @@
    - `memory_entitlements` は、ふだんは `eva+iml` のままにします。片方だけの効き目を比べるときは `eva` か `iml`、付けない版は `none` にします。選んだ権限が App ID でオンになっていないと、書き出しか確かめで止まり、何も上がりません。
    - `testers` は、ふだんは `internal-and-external` のままにします。内部テスターはどちらでも使えます。`internal-only` で上げたビルドは、あとから外部グループにも App Review にも出せません（上げたあとでは変えられません）。外部に出すには、新しいビルド番号で上げ直すことになります。
    - `beta_group` には、ビルドを入れる TestFlight グループの名前（例：`自分用`）を入れます。空のままなら、アップロードだけします（グループの一覧はログに出ます）。
+   - `whats_new` には、テスターに見せるテスト内容（このビルドで変わったことと、試してほしいこと）を入れます。4000 文字まで、絵文字と `<` は使えません（`<` の代わりに `＜`）。改行は、API から実行するときはそのまま入れ、実行画面の1行の欄では `\n` と書きます。空のままなら、テスト内容は空のままです。
 2. archive ジョブが終わると、upload ジョブが承認待ちになります。「Review deployments」で `testflight` を承認します。
 3. App Store Connect の処理が終わると、`beta_group` の内部グループ（または、すべてのビルドを自動で受け取る内部グループ）のテスターの TestFlight アプリに出ます。
 4. 外部テスターに出すときは、`beta_group` に外部グループを選ぶか、App Store Connect の TestFlight で外部グループにビルドを追加し、TestFlight App Review に提出します。審査は版（`MARKETING_VERSION`）ごとで、最初のビルドは必ず審査があります。同じ版のあとのビルドは、審査なしで通ることもあります。ワークフローは提出まではしません。
