@@ -47,6 +47,8 @@ on:
           - feature-language-e4b-continuation
           - feature-language-e4b-chart
           - gemma12b-text
+          - search-note-e2b
+          - search-note-e4b
         default: ui-ux-regression
 permissions:
   contents: read
