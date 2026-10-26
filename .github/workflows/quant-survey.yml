@@ -1,0 +1,70 @@
+name: Survey the precision of Fielua's model files
+# Read-only survey (2026-10-26, thread 「モデルの量子化方式を調査する」):
+# downloads each pinned .litertlm and the official alternatives on the
+# runner, checks the pinned SHA-256, and prints how every weight is stored
+# (type, quantization, measured bits per weight) plus the KV cache types.
+# Nothing is converted, uploaded or changed in the app.
+on:
+  push:
+    branches: [claude/project-thread-h95h5x]
+    paths: ['.github/workflows/quant-survey.yml', 'tools/quant-survey/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  listing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Files and model cards on Hugging Face
+        run: |
+          for repo in gemma-4-E2B-it-litert-lm gemma-4-E4B-it-litert-lm gemma-4-12B-it-litert-lm Qwen3-0.6B Qwen2.5-1.5B-Instruct; do
+            echo "=== $repo (main)"
+            curl -fsSL "https://huggingface.co/api/models/litert-community/$repo/tree/main?recursive=true" \
+              | python3 -c 'import json,sys
+          for f in json.load(sys.stdin):
+              if f.get("type") == "file":
+                  oid = (f.get("lfs") or {}).get("oid", "")
+                  print("  %-80s %14d %s" % (f["path"], f.get("size", 0), oid))' || echo "  listing failed"
+            curl -fsSL "https://huggingface.co/api/models/litert-community/$repo" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  sha", d.get("sha"), "lastModified", d.get("lastModified"))' || true
+          done
+          card() { echo "=== card $1 @ $2"; curl -fsSL "https://huggingface.co/litert-community/$1/raw/$2/README.md" | grep -inE "bit|int4|int8|int2|quant|precision|fp16|float|wi4|afp|block|memory|context" | cut -c 1-260 | head -60 || echo "  card failed"; }
+          card gemma-4-E2B-it-litert-lm b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1
+          card gemma-4-E4B-it-litert-lm 28299f30ee4d43294517a4ac93abd6163412f07f
+          card gemma-4-12B-it-litert-lm 161028364f396379d490ed64ff07c6ef0fcd02d9
+          card Qwen3-0.6B a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76
+          card Qwen2.5-1.5B-Instruct 5e6e7a58d03777898b31330a15d2e0a5a9107de3
+  survey:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: e2b, repo: gemma-4-E2B-it-litert-lm, rev: b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1, file: gemma-4-E2B-it.litertlm, sha: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c }
+          - { key: e4b, repo: gemma-4-E4B-it-litert-lm, rev: 28299f30ee4d43294517a4ac93abd6163412f07f, file: gemma-4-E4B-it.litertlm, sha: 0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0 }
+          - { key: 12b, repo: gemma-4-12B-it-litert-lm, rev: 161028364f396379d490ed64ff07c6ef0fcd02d9, file: gemma-4-12B-it.litertlm, sha: 58fd31b778ca2c21c80d634fb34fc5a89d11d563a38dfd3cbf1b40dbf252a8b6 }
+          - { key: qwen3, repo: Qwen3-0.6B, rev: a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76, file: Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm, sha: 03e7da1eb1108b50dffaa9bb52cc7bcbad2eb0c66ca990267f480c1e545d2856 }
+          - { key: qwen25, repo: Qwen2.5-1.5B-Instruct, rev: 5e6e7a58d03777898b31330a15d2e0a5a9107de3, file: Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm, sha: c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e }
+          # Official alternatives, read for comparison only (not pinned).
+          - { key: alt-qwen3-int8, repo: Qwen3-0.6B, rev: main, file: Qwen3-0.6B.litertlm, sha: '' }
+          - { key: alt-qwen3-mixed-int4, repo: Qwen3-0.6B, rev: main, file: qwen3_0_6b_mixed_int4.litertlm, sha: '' }
+          - { key: alt-e2b-web, repo: gemma-4-E2B-it-litert-lm, rev: main, file: gemma-4-E2B-it-web.litertlm, sha: '' }
+          - { key: alt-e4b-web, repo: gemma-4-E4B-it-litert-lm, rev: main, file: gemma-4-E4B-it-web.litertlm, sha: '' }
+          - { key: alt-12b-web, repo: gemma-4-12B-it-litert-lm, rev: main, file: gemma-4-12B-it-web.litertlm, sha: '' }
+    name: survey ${{ matrix.key }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-builder==0.18.0 tflite==2.18.0 numpy
+      - name: Download
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && cd /mnt/work
+          curl -fsSL --retry 3 -o model.litertlm "https://huggingface.co/litert-community/${{ matrix.repo }}/resolve/${{ matrix.rev }}/${{ matrix.file }}?download=true"
+          ls -l model.litertlm
+          if [ -n "${{ matrix.sha }}" ]; then echo "${{ matrix.sha }}  model.litertlm" | sha256sum -c; else sha256sum model.litertlm; fi
+      - name: Survey
+        working-directory: /mnt/work
+        run: python3 "$GITHUB_WORKSPACE/tools/quant-survey/survey.py" model.litertlm dump
