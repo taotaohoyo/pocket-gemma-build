@@ -2,9 +2,7 @@ name: Phi-4-mini-reasoning follow-up turns
 # 1.1.0 (205): the first inspection's rebuilt two-turn chat fell apart on
 # the CPU. One variant per job (tools/inspect-new-models/followup.py).
 on:
-  push:
-    branches: [claude/project-thread-i1yx09]
-    paths: ['.github/workflows/phi-followup.yml', 'tools/inspect-new-models/followup.py']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
