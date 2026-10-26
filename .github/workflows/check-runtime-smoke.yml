@@ -46,6 +46,7 @@ on:
           - feature-language-e4b-search
           - feature-language-e4b-continuation
           - feature-language-e4b-chart
+          - gemma12b-text
         default: ui-ux-regression
 permissions:
   contents: read
@@ -63,6 +64,8 @@ jobs:
     # own watchdog limit. The reply-language probes give their replies at most 1500 seconds
     # of the watchdog's 1800 (sixteen short replies per system message), as do the
     # feature-language probes (web search, continuation and chart notes, 1.1.0 (195)).
+    # gemma12b-text downloads the 6.88 GB 12B file and gives its one CPU
+    # check at most 1500 seconds of the watchdog's 1800.
     timeout-minutes: 65
     defaults:
       run:
