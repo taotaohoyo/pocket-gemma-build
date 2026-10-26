@@ -1,0 +1,30 @@
+name: Phi-4-mini-reasoning follow-up turns
+# 1.1.0 (205): the first inspection's rebuilt two-turn chat fell apart on
+# the CPU. One variant per job (tools/inspect-new-models/followup.py).
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/phi-followup.yml', 'tools/inspect-new-models/followup.py']
+permissions:
+  contents: read
+jobs:
+  followup:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [greedy, seed2, seed3, think-in-history, live, no-system]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Download and check
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && cd /mnt/work
+          curl -fsSL --retry 3 -o model.litertlm 'https://huggingface.co/litert-community/Phi-4-mini-reasoning/resolve/cbcc9be3bd879651abbb2330be0943c19d037122/model.litertlm?download=true'
+          echo "d507262ca3d01d93d59c573a82e6f2eeb3aec21d9a67c31fb4c0f93d17225b8f  model.litertlm" | sha256sum -c
+      - name: Second turn
+        working-directory: /mnt/work
+        run: timeout 3000 python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/followup.py" model.litertlm ${{ matrix.variant }}
