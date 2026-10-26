@@ -7,6 +7,7 @@ setup the model can't take: the same history greedy or with other seeds,
 the earlier answer with its thinking kept, both turns in one live
 conversation, and the history without the app's system turn.
 Usage: followup.py MODEL VARIANT"""
+import os
 import sys
 import time
 
@@ -37,7 +38,8 @@ def show(name, start, conversation, reply):
 def main():
     model, variant = sys.argv[1], sys.argv[2]
     litert_lm.set_min_log_severity(litert_lm.LogSeverity.WARNING)
-    engine = litert_lm.Engine(model, backend=litert_lm.Backend.CPU(), max_num_tokens=4096, cache_dir='cache')
+    os.makedirs('cache', exist_ok=True)
+    engine = litert_lm.Engine(model, backend=litert_lm.Backend.CPU(), max_num_tokens=4096, cache_dir=os.path.abspath('cache'))
     thinking = litert_lm.ThinkingConfig(enable_thinking=True, thinking_token_budget=1536)
     history = [{'role': 'user', 'content': MATH}, {'role': 'assistant', 'content': ANSWER}]
     if variant == 'think-in-history':
