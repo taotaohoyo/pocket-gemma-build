@@ -1,0 +1,86 @@
+name: Inspect Gemma 4 12B outside the phone
+# Diagnostic for 1.1.0 (200): 12B chats came out garbled on the iPhone GPU
+# while the developer 12B check (Context 1024, no system message, greedy)
+# answered. Compares the 12B export with E4B's and runs both setups on the
+# CPU, and on the GPU code path through software Vulkan where it starts.
+on:
+  push:
+    branches: [claude/project-thread-lj64tz]
+    paths: ['.github/workflows/inspect-12b-linux.yml', 'tools/inspect-12b/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  URL_12B: https://huggingface.co/litert-community/gemma-4-12B-it-litert-lm/resolve/161028364f396379d490ed64ff07c6ef0fcd02d9/gemma-4-12B-it.litertlm?download=true
+  SHA_12B: 58fd31b778ca2c21c80d634fb34fc5a89d11d563a38dfd3cbf1b40dbf252a8b6
+  URL_E4B: https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/28299f30ee4d43294517a4ac93abd6163412f07f/gemma-4-E4B-it.litertlm?download=true
+  SHA_E4B: 0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0
+jobs:
+  describe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-builder==0.18.0 tflite==2.18.0 numpy
+      - name: Work on the larger disk
+        run: sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && df -h / /mnt
+      - name: Describe E4B
+        working-directory: /mnt/work
+        run: |
+          curl -fsSL --retry 3 -o e4b.litertlm "$URL_E4B"
+          echo "$SHA_E4B  e4b.litertlm" | sha256sum -c
+          python3 "$GITHUB_WORKSPACE/tools/inspect-12b/describe.py" e4b.litertlm dump-e4b
+          rm -rf e4b.litertlm dump-e4b
+      - name: Describe 12B
+        working-directory: /mnt/work
+        run: |
+          curl -fsSL --retry 3 -o 12b.litertlm "$URL_12B"
+          echo "$SHA_12B  12b.litertlm" | sha256sum -c
+          python3 "$GITHUB_WORKSPACE/tools/inspect-12b/describe.py" 12b.litertlm dump-12b
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Download 12B
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          cd /mnt/work && curl -fsSL --retry 3 -o 12b.litertlm "$URL_12B"
+          echo "$SHA_12B  12b.litertlm" | sha256sum -c
+          free -g; nproc
+      - name: The check's setup and the chat's setup on the CPU
+        working-directory: /mnt/work
+        run: python3 "$GITHUB_WORKSPACE/tools/inspect-12b/chat.py" 12b.litertlm cpu ctx1024-check ctx1024-chat ctx4096-hello-greedy ctx4096-chat
+  gpu-software:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Software Vulkan (lavapipe)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools >/dev/null
+          vulkaninfo --summary 2>&1 | head -40 || true
+          python3 - <<'PY'
+          import litert_lm, os
+          root = os.path.dirname(litert_lm.__file__)
+          for d, _, files in os.walk(root):
+              for f in files:
+                  if f.endswith(('.so', '.dylib')): print(os.path.join(d, f))
+          PY
+      - name: Download 12B
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          cd /mnt/work && curl -fsSL --retry 3 -o 12b.litertlm "$URL_12B"
+          echo "$SHA_12B  12b.litertlm" | sha256sum -c
+      - name: Context 1024 and 4096 on the GPU code path
+        working-directory: /mnt/work
+        env: { MAX_OUTPUT_TOKENS: '8' }
+        run: timeout 8400 python3 "$GITHUB_WORKSPACE/tools/inspect-12b/chat.py" 12b.litertlm gpu ctx1024-hello-greedy ctx4096-hello-greedy
