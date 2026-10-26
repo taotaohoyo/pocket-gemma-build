@@ -1,0 +1,49 @@
+name: Inspect Phi-4-mini-reasoning and Qwen3.5 4B
+# Before adding them to the app (1.1.0 (205)): pins each file's revision,
+# size and SHA-256, prints the LLM metadata (chat template, stop tokens,
+# thought channel) and runs the app's Japanese chat setup on the CPU with
+# LiteRT-LM 0.18.0, the app's runtime version.
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/inspect-new-models.yml', 'tools/inspect-new-models/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: phi, pin: 'litert-community/Phi-4-mini-reasoning:model.litertlm:M' }
+          - { kind: qwen, pin: 'litert-community/Qwen3.5-4B:Qwen3.5-4B_mixed_int4.litertlm:M' }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0 litert-lm-builder==0.18.0
+      - name: Pin the file
+        run: python3 tools/inspect-new-models/resolve.py "$GITHUB_ENV" '${{ matrix.pin }}'
+      - name: Download and check
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work && cd /mnt/work
+          curl -fsSL --retry 3 -o model.litertlm "$URL_M"
+          ls -l model.litertlm
+          echo "$SHA_M  model.litertlm" | sha256sum -c
+          free -g; nproc
+      - name: Metadata
+        working-directory: /mnt/work
+        run: |
+          python3 - <<'PY'
+          import sys
+          from litert_lm_builder import litertlm_peek
+          litertlm_peek.peek_litertlm_file('model.litertlm', 'dump', sys.stdout)
+          PY
+          ls -l dump
+          rm -rf dump
+      - name: Japanese chats on the CPU
+        working-directory: /mnt/work
+        run: timeout 7800 python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/chat.py" model.litertlm ${{ matrix.kind }}
