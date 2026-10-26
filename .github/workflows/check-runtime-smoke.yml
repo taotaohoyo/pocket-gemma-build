@@ -25,6 +25,8 @@ on:
           - qwen-gpu
           - files
           - video
+          - audio-e2b
+          - audio-e4b
           - e4b-photos
           - e4b-deep
           - e4b-fast
