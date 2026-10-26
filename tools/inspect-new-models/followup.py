@@ -5,7 +5,8 @@ two-turn history, TopK 40, TopP 0.95, temperature 0.7) fell apart into
 repeated words. This runs one variant per job, to tell a bad draw from a
 setup the model can't take: the same history greedy or with other seeds,
 the earlier answer with its thinking kept, both turns in one live
-conversation, and the history without the app's system turn.
+conversation, and the history without the app's system turn, and each turn with a note
+asking for the final answer in Japanese (note-*).
 Usage: followup.py MODEL VARIANT"""
 import os
 import sys
@@ -17,6 +18,8 @@ SYSTEM = "You are a kind and straightforward assistant. Please answer clearly in
 MATH = "りんごが3個ずつ入った箱が4つあります。そこから5個食べると、残りは何個ですか？"
 FOLLOW = "では、その答えを2倍にすると？"
 ANSWER = "残りは7個です。"
+# The note the app could add to each turn for a reasoning model.
+NOTE = "\n\n(Write the final answer in Japanese.)"
 
 
 def sampler(variant):
@@ -45,20 +48,22 @@ def main():
     if variant == 'think-in-history':
         history[1]['content'] = '<think>\n3×4=12、12−5=7。\n</think>\n\n' + ANSWER
     system = None if variant == 'no-system' else SYSTEM
+    noted = variant.startswith('note')
+    ask = (lambda text: text + NOTE) if noted else (lambda text: text)
     with engine:
         start = time.time()
-        if variant == 'live':
+        if variant in ('live', 'note-live'):
             with engine.create_conversation(system_message=system, sampler_config=sampler(variant), thinking_config=thinking,
                                             automatic_tool_calling=False) as conversation:
-                show('live-first', start, conversation, conversation.send_message(litert_lm.Contents.of(MATH), max_output_tokens=1800))
+                show('live-first', start, conversation, conversation.send_message(litert_lm.Contents.of(ask(MATH)), max_output_tokens=1800))
                 start = time.time()
-                show('live-second', start, conversation, conversation.send_message(litert_lm.Contents.of(FOLLOW), max_output_tokens=1800))
+                show('live-second', start, conversation, conversation.send_message(litert_lm.Contents.of(ask(FOLLOW)), max_output_tokens=1800))
             return
         with engine.create_conversation(system_message=system, sampler_config=sampler(variant), messages=history,
                                         thinking_config=thinking, automatic_tool_calling=False) as conversation:
             if variant == 'greedy':
                 print('RENDER', repr(conversation.render_message_to_string(FOLLOW)), flush=True)
-            show(variant, start, conversation, conversation.send_message(litert_lm.Contents.of(FOLLOW), max_output_tokens=1800))
+            show(variant, start, conversation, conversation.send_message(litert_lm.Contents.of(ask(FOLLOW)), max_output_tokens=1800))
 
 
 main()

@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [greedy, seed2, seed3, think-in-history, live, no-system]
+        variant: [note-live, note-seed1, note-seed2, note-seed3, note-seed4]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
