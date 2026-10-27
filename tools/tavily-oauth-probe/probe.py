@@ -39,6 +39,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 plain = urllib.request.build_opener(NoRedirect)
+jar = None
+
+
+def browser():
+    """A fresh cookie jar, as a browser keeps one through the sign-in hops."""
+    global plain, jar
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    plain = urllib.request.build_opener(NoRedirect, urllib.request.HTTPCookieProcessor(jar))
 
 
 def call(method, url, *, body=None, headers=None, form=None):
@@ -109,9 +118,15 @@ def pkce():
     return verifier, challenge
 
 
-def follow(url, hops=8):
-    """Walks the sign-in redirects (no cookies kept) and prints each hop."""
+def follow(url, hops=8, tweak=None):
+    """Walks the sign-in redirects with cookies and prints each hop. `tweak`
+    may add parameters to the hop on another host (to see what the sign-in
+    page itself honours)."""
+    browser()
     for _ in range(hops):
+        if tweak and urllib.parse.urlparse(url).netloc == "auth.tavily.com" and urllib.parse.urlparse(url).path == "/authorize":
+            url = url + "&" + urllib.parse.urlencode(tweak)
+            tweak = None
         status, h, raw = call("GET", url, headers={"Accept": "text/html"})
         loc = {k.lower(): v for k, v in h.items()}.get("location")
         print(f"  {status}  {describe_url(url)}")
@@ -132,7 +147,13 @@ def follow(url, hops=8):
                 snippet = re.sub(r"\s+", " ", text[max(0, at - 60):at + 60])
                 print(f"    '{word}' x{len(hits)}: …{snippet}…")
         hrefs = sorted(set(re.findall(r'href="([^"]+)"', text)))
-        print("    links: " + ", ".join(h_ for h_ in hrefs if "sign" in h_.lower() or "regist" in h_.lower() or "auth" in h_.lower())[:800])
+        print("    links: " + ", ".join(re.sub(r"state=[^&]+", "state=…", h_) for h_ in hrefs if not h_.startswith("https://cdn"))[:900])
+        buttons = re.findall(r'<button[^>]*>(.*?)</button>', text, re.S | re.I)
+        print("    buttons: " + " | ".join(re.sub(r"<[^>]+>|\s+", " ", b).strip() for b in buttons)[:600])
+        inputs = re.findall(r'<input[^>]*name="([^"]+)"', text)
+        print("    inputs: " + ", ".join(inputs))
+        headings = re.findall(r'<h1[^>]*>(.*?)</h1>|<p[^>]*class="[^"]*(?:subtitle|description)[^"]*"[^>]*>(.*?)</p>', text, re.S | re.I)
+        print("    headings: " + " | ".join(re.sub(r"<[^>]+>|\s+", " ", a or b).strip() for a, b in headings)[:400])
         return
 
 
@@ -239,7 +260,12 @@ def mcp():
                 if k in props:
                     print(f"    {k}: {json.dumps(props[k], ensure_ascii=False)[:300]}")
             print(f"    outputSchema: {json.dumps(tool.get('outputSchema'), ensure_ascii=False)[:500]}")
-    for label, hdrs in (("with session", with_session), ("stateless, like Tavily's CLI", keyless)):
+    status, h, raw = rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, with_session)
+    print(f"notifications/initialized -> {status}")
+    own = dict(keyless)
+    own["mcp-session-id"] = secrets.token_hex(16)
+    for label, hdrs in (("with session", with_session), ("stateless, like Tavily's CLI", keyless),
+                        ("own session id, like Tavily's CLI", own)):
         status, h, raw = rpc(call_body, hdrs)
         print(f"tools/call tavily_search ({label}) -> {status}")
         show_headers(h, ["content-type"])
@@ -262,29 +288,49 @@ def mcp():
                 payload = None
         if isinstance(payload, dict):
             print(f"  payload keys={list(payload)}")
-            for item in payload.get("results", [])[:3]:
+            if "results" not in payload:
+                print("  payload: " + json.dumps(payload, ensure_ascii=False)[:1200])
+            for item in (payload.get("results") or [])[:3]:
                 print(f"    - {item.get('title', '')[:50]} | {item.get('url', '')[:80]} | content {len(item.get('content') or '')} chars | keys={list(item)}")
+
+
+def rest_keyless():
+    head("REST search in keyless mode (comparison)")
+    status, h, raw = call("POST", "https://api.tavily.com/search", body={"query": "東京スカイツリー 高さ", "max_results": 3},
+                          headers={"X-Tavily-Access-Mode": "keyless"})
+    print(f"api.tavily.com/search keyless -> {status}")
+    try:
+        data = json.loads(raw)
+        print(f"  keys={list(data)}")
+        if "results" in data:
+            for item in data["results"][:3]:
+                print(f"    - {item.get('title', '')[:50]} | {item.get('url', '')[:80]} | keys={list(item)}")
+        else:
+            print("  " + json.dumps(data, ensure_ascii=False)[:800])
+    except Exception:  # noqa: BLE001
+        print("  " + raw[:300].decode("utf-8", "replace"))
 
 
 def main():
     meta = metadata()
     first = None
-    for uri in ("fielua://oauth/tavily", "com.fielua.app:/oauth/tavily", "app.pocketgemma.personal:/oauth/tavily",
-                "https://fielua.invalid/oauth/tavily"):
+    for uri in ("fielua://oauth/tavily",):
         cid = register_and_authorize(meta, uri)
         first = first or (cid, uri) if cid else first
     if first:
         cid, uri = first
-        for extra in ({"prompt": "create"}, {"screen_hint": "signup"}, {"prompt": "login"}):
-            head(f"authorize with {extra}")
+        for extra, tweak in (({"prompt": "create"}, None), ({"prompt": "login"}, None),
+                             ({}, {"screen_hint": "signup"}), ({}, {"prompt": "login"}), ({}, {"ui_locales": "ja"})):
+            head(f"authorize with {extra}, sign-in page given {tweak}")
             _, challenge = pkce()
             params = {"response_type": "code", "client_id": cid, "redirect_uri": uri, "scope": "openid offline_access",
                       "state": secrets.token_urlsafe(16), "code_challenge": challenge, "code_challenge_method": "S256",
                       "resource": RESOURCE}
             params.update(extra)
-            follow(meta.get("authorization_endpoint", MCP + "/authorize") + "?" + urllib.parse.urlencode(params))
+            follow(meta.get("authorization_endpoint", MCP + "/authorize") + "?" + urllib.parse.urlencode(params), tweak=tweak)
         token_errors(meta, cid, uri)
     mcp()
+    rest_keyless()
 
 
 if __name__ == "__main__":
