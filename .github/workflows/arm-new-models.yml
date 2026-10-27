@@ -3,7 +3,12 @@ name: Time Phi-4-mini-reasoning and Qwen3.5 4B on Arm CPUs
 # while Linux x86 answered in seconds. Runs the app's chat setup with the
 # official LiteRT-LM 0.18.0 on Arm CPUs, as the iPhone's: Linux arm64
 # (16 GB) and macOS arm64 (7 GB), streaming as the app does.
+# A push of this file starts it once (a workflow only on a branch can't be
+# dispatched until it has run).
 on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/arm-new-models.yml']
   workflow_dispatch:
 permissions:
   contents: read
