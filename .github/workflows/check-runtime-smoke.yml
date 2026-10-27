@@ -54,6 +54,7 @@ on:
           - cpu-compare
           - gpu-new-models
           - memory-new-models
+          - lock-new-models
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
@@ -83,7 +84,8 @@ jobs:
     # with the process's CPU time and pages read (arm-new-models.yml runs the
     # official macOS build the same way). gpu-new-models asks Qwen3.5 and Phi the
     # same on the GPU (Metal), memory-new-models on the CPU with the weights in
-    # the process's memory (cache ":memory").
+    # the process's memory (cache ":memory", not built into the iOS runtime),
+    # lock-new-models with the mapped weight cache locked in memory (206's fix).
     timeout-minutes: 65
     defaults:
       run:
