@@ -55,6 +55,7 @@ on:
           - gpu-new-models
           - memory-new-models
           - lock-new-models
+          - qwen35-thinking
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
