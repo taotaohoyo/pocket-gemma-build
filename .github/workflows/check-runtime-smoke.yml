@@ -65,6 +65,8 @@ on:
           - search-live-e2b-more
           - search-live-e4b
           - search-live-e4b-more
+          - search-recorded-e2b
+          - search-recorded-e4b
         default: ui-ux-regression
 permissions:
   contents: read
@@ -97,6 +99,8 @@ jobs:
     # search-focus-* (1.1.0 (208)) give their version cases at most 1250 seconds of the 1500.
     # search-live-* (1.1.0 (211)) search Tavily for real through a relay on 127.0.0.1 that alone
     # has the TAVILY_API_KEY secret, and give their cases at most 1250 seconds of the 1500.
+    # search-recorded-* (1.1.0 (211)) put the ChatGPT cases to the real model over the pages
+    # Tavily found on 2026-10-27, kept in the test, for runs without the secret.
     timeout-minutes: 65
     defaults:
       run:
