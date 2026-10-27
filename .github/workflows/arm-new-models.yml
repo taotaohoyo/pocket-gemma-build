@@ -1,0 +1,46 @@
+name: Time Phi-4-mini-reasoning and Qwen3.5 4B on Arm CPUs
+# 1.1.0 (205) showed only 「考えています…」 on the phone for both models,
+# while Linux x86 answered in seconds. Runs the app's chat setup with the
+# official LiteRT-LM 0.18.0 on Arm CPUs, as the iPhone's: Linux arm64
+# (16 GB) and macOS arm64 (7 GB), streaming as the app does.
+# A push of this file starts it once (a workflow only on a branch can't be
+# dispatched until it has run).
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/arm-new-models.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  arm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-26]
+        kind: [qwen, phi]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: The app's pinned file
+        run: |
+          case '${{ matrix.kind }}' in
+            phi) echo "URL_M=https://huggingface.co/litert-community/Phi-4-mini-reasoning/resolve/cbcc9be3bd879651abbb2330be0943c19d037122/model.litertlm?download=true" >> "$GITHUB_ENV"
+                 echo "SHA_M=d507262ca3d01d93d59c573a82e6f2eeb3aec21d9a67c31fb4c0f93d17225b8f" >> "$GITHUB_ENV" ;;
+            qwen) echo "URL_M=https://huggingface.co/litert-community/Qwen3.5-4B/resolve/190cd3223e7701c271c927fe84f1fa66b498f79d/Qwen3.5-4B_mixed_int4.litertlm?download=true" >> "$GITHUB_ENV"
+                  echo "SHA_M=7243c33c9c6192150ab6da7ac13a9efdc24ff1a653eabc93b2757de4b44b012a" >> "$GITHUB_ENV" ;;
+          esac
+      - name: Download and check
+        run: |
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          curl -fsSL --retry 3 -o model.litertlm "$URL_M"
+          ls -l model.litertlm
+          echo "$SHA_M  model.litertlm" | shasum -a 256 -c
+          if [ "$(uname)" = Darwin ]; then sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string; else free -g; nproc; lscpu | head -20; fi
+      - name: Chats on the Arm CPU, default threads
+        working-directory: ${{ runner.temp }}/work
+        run: python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/arm_probe.py" model.litertlm ${{ matrix.kind }}

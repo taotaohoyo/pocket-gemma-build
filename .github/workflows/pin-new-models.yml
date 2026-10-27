@@ -19,3 +19,9 @@ jobs:
             'litert-community/Phi-4-mini-reasoning:model.litertlm:PHI' \
             'litert-community/Qwen3.5-4B:Qwen3.5-4B_mixed_int4.litertlm:QWEN35'
           cat pins.env
+      - name: The model cards at the pinned revisions (benchmarks, phone numbers)
+        run: |
+          for card in Phi-4-mini-reasoning/resolve/cbcc9be3bd879651abbb2330be0943c19d037122 Qwen3.5-4B/resolve/190cd3223e7701c271c927fe84f1fa66b498f79d; do
+            echo "===== $card"
+            curl -fsSL "https://huggingface.co/litert-community/$card/README.md"
+          done
