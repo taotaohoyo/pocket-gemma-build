@@ -61,6 +61,10 @@ on:
           - search-focus-e2b
           - search-focus-e4b
           - search-focus-e4b-more
+          - search-live-e2b
+          - search-live-e2b-more
+          - search-live-e4b
+          - search-live-e4b-more
         default: ui-ux-regression
 permissions:
   contents: read
@@ -91,6 +95,8 @@ jobs:
     # the process's memory (cache ":memory", not built into the iOS runtime),
     # lock-new-models with the mapped weight cache locked in memory (206's fix).
     # search-focus-* (1.1.0 (208)) give their version cases at most 1250 seconds of the 1500.
+    # search-live-* (1.1.0 (211)) search Tavily for real through a relay on 127.0.0.1 that alone
+    # has the TAVILY_API_KEY secret, and give their cases at most 1250 seconds of the 1500.
     timeout-minutes: 65
     defaults:
       run:
@@ -118,11 +124,45 @@ jobs:
         run: |
           python3 scripts/test-native-watchdog.py
           bash -n scripts/check-native-vision.sh
+      # Only the relay gets the key; the probe step and the test process
+      # don't, and nothing it writes holds it.
+      - name: Start the local Tavily relay for the live search probes
+        if: startsWith(inputs.probe, 'search-live')
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          mkdir -p build/NativeVision
+          if [[ -z "$TAVILY_API_KEY" ]]; then
+            echo "TAVILY_LIVE_RELAY none: no TAVILY_API_KEY secret, the live cases skip"
+            exit 0
+          fi
+          nohup python3 scripts/tavily-relay.py build/NativeVision/tavily-live.jsonl > /dev/null 2>&1 &
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8765/health > /dev/null; then echo "TAVILY_LIVE_RELAY up"; exit 0; fi
+            sleep 0.5
+          done
+          echo "TAVILY_LIVE_RELAY did not start"
+          exit 1
       - name: Bounded native SDK probe
         env:
           NATIVE_SMOKE_ONLY: '1'
           NATIVE_PROBE: ${{ inputs.probe }}
         run: bash scripts/check-native-vision.sh
+      - name: Print the live searches and keep the key out of the evidence
+        if: always() && startsWith(inputs.probe, 'search-live')
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          python3 scripts/tavily-relay.py --print build/NativeVision/tavily-live.jsonl || true
+          if [[ -n "$TAVILY_API_KEY" && -d build/NativeVision ]]; then
+            found=$(grep -rlF -- "$TAVILY_API_KEY" build/NativeVision || true)
+            if [[ -n "$found" ]]; then
+              printf '%s\n' "$found" | while read -r file; do rm -rf -- "$file"; done
+              echo "TAVILY_LIVE removed $(printf '%s\n' "$found" | wc -l) file(s) that held the key"
+            else
+              echo "TAVILY_LIVE no file holds the key"
+            fi
+          fi
       - name: Preserve activity, fatal native messages and crash reports
         if: always()
         uses: actions/upload-artifact@v4
