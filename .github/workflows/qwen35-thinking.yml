@@ -1,0 +1,28 @@
+name: Qwen3.5 4B thinking on an Arm CPU
+# With thinking on, Qwen3.5 gave no answer in the app's simulator check
+# (run 40448102818). The same question on the official LiteRT-LM 0.18.0 CPU
+# build with the app's settings. A push of this file starts it once.
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/qwen35-thinking.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  thinking:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Download and check
+        run: |
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          curl -fsSL --retry 3 -o model.litertlm "https://huggingface.co/litert-community/Qwen3.5-4B/resolve/190cd3223e7701c271c927fe84f1fa66b498f79d/Qwen3.5-4B_mixed_int4.litertlm?download=true"
+          echo "7243c33c9c6192150ab6da7ac13a9efdc24ff1a653eabc93b2757de4b44b012a  model.litertlm" | shasum -a 256 -c
+      - name: Twelve replies
+        working-directory: ${{ runner.temp }}/work
+        run: python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/qwen35_thinking.py" model.litertlm
