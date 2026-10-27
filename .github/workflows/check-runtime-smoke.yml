@@ -49,6 +49,8 @@ on:
           - gemma12b-text
           - phi-text
           - qwen35-text
+          - qwen35-trace
+          - phi-trace
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
@@ -72,6 +74,8 @@ jobs:
     # check at most 1500 seconds of the watchdog's 1800.
     # phi-text (one reasoning reply on the CPU) and qwen35-text (a Japanese chat and
     # the clean-start check, CPU) download their own 2.8 GB file, 1.1.0 (205).
+    # qwen35-trace and phi-trace print the runtime's own stream chunk by chunk
+    # (default and 32-bit activations), after 205 showed only 「考えています…」.
     timeout-minutes: 65
     defaults:
       run:
