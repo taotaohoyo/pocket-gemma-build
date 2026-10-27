@@ -66,6 +66,8 @@ on:
           - search-live-e4b
           - search-live-e4b-more
           - search-live-e4b-rest
+          - search-live-e2b-hidden
+          - search-live-e4b-hidden
           - search-recorded-e2b
           - search-recorded-e4b
         default: ui-ux-regression
