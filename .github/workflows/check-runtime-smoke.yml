@@ -53,6 +53,7 @@ on:
           - phi-trace
           - cpu-compare
           - gpu-new-models
+          - memory-new-models
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
@@ -81,7 +82,8 @@ jobs:
     # cpu-compare asks Qwen3 0.6B, E2B and Qwen3.5 the same question on the CPU
     # with the process's CPU time and pages read (arm-new-models.yml runs the
     # official macOS build the same way). gpu-new-models asks Qwen3.5 and Phi the
-    # same on the GPU (Metal).
+    # same on the GPU (Metal), memory-new-models on the CPU with the weights in
+    # the process's memory (cache ":memory").
     timeout-minutes: 65
     defaults:
       run:
