@@ -51,6 +51,7 @@ on:
           - qwen35-text
           - qwen35-trace
           - phi-trace
+          - cpu-compare
           - search-note-e2b
           - search-note-e4b
         default: ui-ux-regression
@@ -76,6 +77,9 @@ jobs:
     # the clean-start check, CPU) download their own 2.8 GB file, 1.1.0 (205).
     # qwen35-trace and phi-trace print the runtime's own stream chunk by chunk
     # (default and 32-bit activations), after 205 showed only 「考えています…」.
+    # cpu-compare asks Qwen3 0.6B, E2B and Qwen3.5 the same question on the CPU
+    # with the process's CPU time and pages read (arm-new-models.yml runs the
+    # official macOS build the same way).
     timeout-minutes: 65
     defaults:
       run:

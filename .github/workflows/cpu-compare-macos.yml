@@ -1,0 +1,38 @@
+name: CPU comparison on the official macOS build
+# The simulator's cpu-compare probe (check-runtime-smoke.yml) asks the app's
+# runtime one question on Qwen3 0.6B, E2B and Qwen3.5 4B on the CPU; this asks
+# the official LiteRT-LM 0.18.0 macOS build the same on the same runner type,
+# with CPU time and pages read. A push of this file starts it once.
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/cpu-compare-macos.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Download the app's pinned files
+        run: |
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          get() {
+            curl -fsSL --retry 3 -o "$1.litertlm" "$2"
+            echo "$3  $1.litertlm" | shasum -a 256 -c
+          }
+          get qwen3 "https://huggingface.co/litert-community/Qwen3-0.6B/resolve/a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm?download=true" 03e7da1eb1108b50dffaa9bb52cc7bcbad2eb0c66ca990267f480c1e545d2856
+          get e2b "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1/gemma-4-E2B-it.litertlm?download=true" 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
+          get qwen35 "https://huggingface.co/litert-community/Qwen3.5-4B/resolve/190cd3223e7701c271c927fe84f1fa66b498f79d/Qwen3.5-4B_mixed_int4.litertlm?download=true" 7243c33c9c6192150ab6da7ac13a9efdc24ff1a653eabc93b2757de4b44b012a
+          sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: One question each, in its own process
+        working-directory: ${{ runner.temp }}/work
+        run: |
+          for name in qwen3 e2b qwen35; do
+            python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/cpu_compare.py" "$name" "$name.litertlm" || echo "CPU_COMPARE $name failed $?"
+          done
