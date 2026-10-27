@@ -1,0 +1,33 @@
+name: Phi-4-mini-reasoning answer language on an Arm CPU
+# Phi answered most Japanese questions in Chinese with the app's system
+# message (run 40439991123). The same questions with that message alone and
+# with a note on the answer's language, official LiteRT-LM 0.18.0, CPU.
+# A push of this file starts it once.
+on:
+  push:
+    branches: [claude/project-thread-i1yx09]
+    paths: ['.github/workflows/phi-language.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  language:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [none, note]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install litert-lm-api==0.18.0
+      - name: Download and check
+        run: |
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          curl -fsSL --retry 3 -o model.litertlm "https://huggingface.co/litert-community/Phi-4-mini-reasoning/resolve/cbcc9be3bd879651abbb2330be0943c19d037122/model.litertlm?download=true"
+          echo "d507262ca3d01d93d59c573a82e6f2eeb3aec21d9a67c31fb4c0f93d17225b8f  model.litertlm" | shasum -a 256 -c
+      - name: Nine questions
+        working-directory: ${{ runner.temp }}/work
+        run: python3 "$GITHUB_WORKSPACE/tools/inspect-new-models/phi_language.py" model.litertlm ${{ matrix.variant }}
