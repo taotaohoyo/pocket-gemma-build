@@ -51,6 +51,9 @@ on:
           - qwen35-text
           - search-note-e2b
           - search-note-e4b
+          - search-focus-e2b
+          - search-focus-e4b
+          - search-focus-e4b-more
         default: ui-ux-regression
 permissions:
   contents: read
@@ -72,6 +75,7 @@ jobs:
     # check at most 1500 seconds of the watchdog's 1800.
     # phi-text (one reasoning reply on the CPU) and qwen35-text (a Japanese chat and
     # the clean-start check, CPU) download their own 2.8 GB file, 1.1.0 (205).
+    # search-focus-* (1.1.0 (208)) give their version cases at most 1250 seconds of the 1500.
     timeout-minutes: 65
     defaults:
       run:
