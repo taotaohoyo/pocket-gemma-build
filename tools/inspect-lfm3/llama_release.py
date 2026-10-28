@@ -1,5 +1,5 @@
 """Finds the newest llama.cpp release (ggml-org) and the first whose notes
-or tag come after LFM3 support (PR 31252, merged 2026-10-27), prints its
+= v0.8.0, after LFM3 support, PR 31252 merged 2026-10-27) with its
 assets, and writes TAG, the xcframework URL and its SHA-256 (which is the
 SwiftPM checksum of a binary target) to the file given.
 Usage: llama_release.py OUT"""
@@ -23,9 +23,12 @@ def main():
     releases = get('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30')
     for r in releases[:30]:
         print(f'{r["tag_name"]} {r["published_at"]} {r["target_commitish"]} prerelease={r["prerelease"]}')
-    newest = releases[0]
-    tag = newest['tag_name']
-    print(f'== newest {tag}')
+    # v0.8.0 (2026-10-28) is llama.cpp's first semver release, on the same
+    # commit as the build release b11960, after LFM3's merge (b11938); the
+    # build releases carry the assets.
+    tag = os.environ.get('LLAMA_TAG', 'b11960')
+    newest = get(f'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}')
+    print(f'== chosen {tag}')
     for a in newest['assets']:
         print(f'   {a["name"]} {a["size"]}')
     xc = next(a for a in newest['assets'] if a['name'].endswith('-xcframework.zip'))
