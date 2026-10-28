@@ -38,13 +38,13 @@ jobs:
           set -euo pipefail
           bash scripts/build-ios.sh 2>&1 | tee build/device-ipa-build.log
           mkdir -p build/device-candidate
-          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.1.0-229.ipa
+          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.1.0-230.ipa
           cp build/DerivedData/Build/Products/Release-iphoneos/PocketGemma.app/runtime-build.json build/device-candidate/runtime-build-device.json
           python3 - <<'PY'
           import hashlib,json,pathlib
-          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.1.0-229.ipa'
+          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.1.0-230.ipa'
           (root/(ipa.name+'.sha256')).write_text(hashlib.sha256(ipa.read_bytes()).hexdigest()+'  '+ipa.name+'\n')
-          result={'candidate':'1.1.0 (229)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
+          result={'candidate':'1.1.0 (230)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
               'priorCandidateSimulatorInference':{'candidate':'1.0.15 (16)','run':38638840490,'passed':4,'failed':12,'skipped':0,
                   'failure':'Apple none-mode RuntimeProxy null builtin; source fix now imports provider C entry point'},
               'currentCandidateSimulatorInference':'recorded separately; a successful IPA build is not an inference result',
@@ -55,7 +55,7 @@ jobs:
       - name: Save device IPA separately from semantic test status
         uses: actions/upload-artifact@v4
         with:
-          name: PocketGemma-1.1.0-229-Device-Candidate
+          name: PocketGemma-1.1.0-230-Device-Candidate
           path: build/device-candidate
           if-no-files-found: error
           retention-days: 7
