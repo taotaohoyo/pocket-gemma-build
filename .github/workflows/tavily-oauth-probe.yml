@@ -1,0 +1,26 @@
+name: Probe Tavily sign-in for the app
+# Fielua's in-app Tavily sign-in (thread ol2exe): prints what Tavily's remote
+# MCP server offers a native app (OAuth metadata, client registration with
+# an app redirect scheme, the sign-in page, the MCP search tool's answer in
+# keyless mode). No account, key or secret is used; the log is public.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/project-thread-ol2exe]
+    paths: ['tools/tavily-oauth-probe/**', '.github/workflows/tavily-oauth-probe.yml']
+permissions:
+  contents: read
+concurrency:
+  group: tavily-oauth-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I tools/tavily-oauth-probe/probe.py
