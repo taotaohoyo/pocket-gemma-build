@@ -70,6 +70,7 @@ on:
           - search-live-e4b-hidden
           - search-recorded-e2b
           - search-recorded-e4b
+          - try-questions-e2b
         default: ui-ux-regression
 permissions:
   contents: read
@@ -104,6 +105,8 @@ jobs:
     # has the TAVILY_API_KEY secret, and give their cases at most 1250 seconds of the 1500.
     # search-recorded-* (1.1.0 (211)) put the ChatGPT cases to the real model over the pages
     # Tavily found on 2026-10-27, kept in the test, for runs without the secret.
+    # try-questions-e2b (1.1.0 (219)) asks E2B the empty chat's three try questions in the
+    # five app languages on the CPU, at most 1150 seconds of the 1500.
     timeout-minutes: 65
     defaults:
       run:
