@@ -1,0 +1,92 @@
+name: Inspect LFM3 and Kimi for 1.1.0 (232)
+# Before LFM3-1.7B joins the app: pins the Hugging Face files (revision,
+# size, SHA-256) and the llama.cpp release with LFM3 support (its iOS
+# xcframework and SwiftPM checksum), prints the licenses, chat templates and
+# the framework's headers, and asks LFM3-1.7B short Japanese questions with
+# llama.cpp on an Arm CPU, thinking on and off. A push of these files
+# starts it once.
+on:
+  push:
+    branches: [claude/project-thread-is5vy0]
+    paths: ['.github/workflows/inspect-lfm3.yml', 'tools/inspect-lfm3/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hugging Face files, licenses and templates
+        run: python3 tools/inspect-lfm3/hub.py pins.env
+      - name: llama.cpp release with LFM3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/inspect-lfm3/llama_release.py pins.env
+      - name: The xcframework's layout, headers and module map
+        run: |
+          unzip -l llama-xcframework.zip | head -120
+          mkdir xc && cd xc && unzip -q ../llama-xcframework.zip
+          find . -name Info.plist -maxdepth 6 | while read -r p; do echo "== $p"; cat "$p" | head -80; done
+          find . -name '*.modulemap' | while read -r m; do echo "== $m"; cat "$m"; done
+          find . -path '*ios-arm64/*' -type f | head -60
+          for b in $(find . -path '*ios-arm64*' -type f -name llama); do echo "== $b"; file "$b"; ls -l "$b"; done
+          header=$(find . -path '*ios-arm64/*' -name llama.h | head -1)
+          echo "== $header"; cat "$header"
+          for h in $(find . -path '*ios-arm64/*' -name '*.h' | sort); do echo "-- $h $(wc -l < "$h")"; done
+          mtmd=$(find . -path '*ios-arm64/*' -name 'mtmd*.h' | head -1)
+          [[ -n "$mtmd" ]] && { echo "== $mtmd"; cat "$mtmd"; } || echo 'NO mtmd header in the xcframework'
+      - uses: actions/upload-artifact@v4
+        with: { name: lfm3-pins, path: pins.env, retention-days: 7 }
+
+  chat:
+    needs: pins
+    strategy:
+      fail-fast: false
+      matrix:
+        quant: [QAD_Q4_0, Q4_K_M]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: lfm3-pins }
+      - name: Pins
+        run: |
+          cat pins.env >> "$GITHUB_ENV"
+          cat pins.env
+      - name: Build llama.cpp at the pinned release
+        run: |
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp "$RUNNER_TEMP/llama.cpp"
+          cd "$RUNNER_TEMP/llama.cpp"
+          git log -1 --format='%H %cI %s'
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DGGML_NATIVE=ON > /dev/null
+          cmake --build build -j"$(nproc)" --target llama-server > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          ls -l build/bin
+          nproc; free -g
+      - name: Download and check
+        run: |
+          url_var="URL_${{ matrix.quant }}"; sha_var="SHA_${{ matrix.quant }}"; size_var="SIZE_${{ matrix.quant }}"
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          curl -fsSL --retry 3 -o model.gguf "${!url_var}"
+          ls -l model.gguf; echo "expected ${!size_var}"
+          echo "${!sha_var}  model.gguf" | sha256sum -c
+      - name: GGUF metadata
+        run: |
+          pip install --quiet numpy pyyaml sentencepiece || true
+          cd "$RUNNER_TEMP/llama.cpp"
+          PYTHONPATH=gguf-py python3 gguf-py/gguf/scripts/gguf_dump.py --no-tensors "$RUNNER_TEMP/work/model.gguf" 2>&1 | head -120 || true
+          PYTHONPATH=gguf-py python3 gguf-py/gguf/scripts/gguf_dump.py "$RUNNER_TEMP/work/model.gguf" 2>&1 | grep -E '^ +[0-9]+:' | awk '{print $5}' | sort | uniq -c || true
+      - name: Japanese questions, thinking off and on
+        run: |
+          cd "$RUNNER_TEMP/work"
+          "$RUNNER_TEMP/llama.cpp/build/bin/llama-server" -m model.gguf -c 8192 -t 4 --jinja --no-webui \
+            --host 127.0.0.1 --port 8080 -np 1 > server.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do curl -fsS http://127.0.0.1:8080/health > /dev/null 2>&1 && break; sleep 1; done
+          grep -E 'load_tensors|model size|n_ctx|KV|kv|CPU_REPACK|system_info|chat template' server.log | head -40 || true
+          timeout 4200 python3 "$GITHUB_WORKSPACE/tools/inspect-lfm3/chat.py" "${{ matrix.quant }}" || echo "CHAT FAILED $?"
+          grep -E 'VmHWM|VmRSS' /proc/$pid/status
+          kill $pid || true
+          tail -30 server.log
