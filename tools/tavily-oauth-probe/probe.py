@@ -376,12 +376,35 @@ def sign_up_page(meta, redirect_uri="fielua://oauth/tavily"):
             control = {k.lower(): v for k, v in h.items()}.get("location")
             if control:
                 follow(control)
-    head("Callback without the cookie jar: what mcp.tavily.com says to a made-up Auth0 return")
-    plain = urllib.request.build_opener(NoRedirect)
-    for path in ("/callback", "/oauth/callback", "/auth/callback"):
-        status, h, raw = call("GET", MCP + path + "?code=not-a-code&state=not-a-state")
+    head("Callback without mcp.tavily.com's load-balancer cookies (AWSALB): is the sign-in still found?")
+    # The sheet that opens the sign-up page never saw the cookies the app's
+    # own request to /authorize got. Auth0 returns to /auth/callback with
+    # mcp.tavily.com's state; a made-up code there must fail as "bad code"
+    # (sign-in found) and not as "unknown state", every time, with no cookie.
+    def visible(raw):
+        text = raw.decode("utf-8", "replace")
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.S | re.I)
+        return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text))).strip()[:220]
+    def answer(state):
+        status, h, raw = call("GET", MCP + "/auth/callback?" + urllib.parse.urlencode({"code": "not-a-code", "state": state}))
         loc = {k.lower(): v for k, v in h.items()}.get("location")
-        print(f"  GET {path}?code=…&state=… -> {status} {('Location ' + describe_url(loc)) if loc else raw[:160].decode('utf-8', 'replace')}")
+        return f"{status} " + (f"Location {describe_url(loc)}" if loc else visible(raw))
+    plain = urllib.request.build_opener(NoRedirect)
+    print(f"  unknown state: {answer('not-a-state')}")
+    for attempt in range(1, 7):
+        plain = urllib.request.build_opener(NoRedirect)
+        _, challenge = pkce()
+        ours = secrets.token_urlsafe(32)
+        params = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
+                  "scope": "openid offline_access", "state": ours, "code_challenge": challenge,
+                  "code_challenge_method": "S256", "resource": RESOURCE}
+        status, h, raw = call("GET", meta.get("authorization_endpoint", MCP + "/authorize") + "?" + urllib.parse.urlencode(params))
+        loc = {k.lower(): v for k, v in h.items()}.get("location") or ""
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query).get("state", [""])[0]
+        plain = urllib.request.build_opener(NoRedirect)
+        result = answer(state)
+        back = "comes back to the app with our state" if "fielua://" in result and short(ours) in result else ""
+        print(f"  sign-in {attempt}, no cookie: {result} {back}")
 
 
 def main():
