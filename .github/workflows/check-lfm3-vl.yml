@@ -1,0 +1,96 @@
+name: Check LFM3-VL 2B pictures on llama.cpp for 1.1.0 (234)
+# LFM3-VL 2B's real files (the QAD Q4_0 model and its Q8_0 picture
+# projector) through the app's own path (Packages/PocketLlama: LFM3Chat and
+# LlamaVision on llama.cpp b11960's mtmd) on the Mac's CPU, and on its Metal
+# GPU where the runner has one: the app's red-square probe picture, a
+# picture drawn in the test, a follow-up, a typed marker, and stop.
+on:
+  push:
+    branches: [claude/project-thread-is5vy0]
+    paths: ['PocketGemma-source.zip', '.github/workflows/check-lfm3-vl.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lfm3-vl-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lfm3-vl:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      VL_URL: https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/b36554cfd35854b06429900131730cd80f092cdb/LFM3-VL-2B-QAD-Q4_0.gguf?download=true
+      VL_SHA: 621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6
+      MMPROJ_URL: https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/b36554cfd35854b06429900131730cd80f092cdb/mmproj-LFM3-VL-2B-Q8_0.gguf?download=true
+      MMPROJ_SHA: c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: mtmd's header as the app builds against it
+        run: |
+          mkdir -p build/lfm3-vl
+          swift package --package-path Packages/PocketLlama resolve
+          header=$(find Packages/PocketLlama/.build -path '*macos*' -name mtmd.h | head -1)
+          echo "== $header"
+          grep -vE '^\s*//|^\s*$' "$header" | tee build/lfm3-vl/mtmd.h.txt | head -400
+      - name: PocketCore tests (LFM3 format)
+        timeout-minutes: 10
+        run: |
+          status=0
+          swift test --package-path Packages/PocketCore --filter LFM3Tests > build/lfm3-vl/core-tests.log 2>&1 || status=$?
+          grep -E "error:|failed|Executed" build/lfm3-vl/core-tests.log | head -60
+          exit $status
+      - name: Download LFM3-VL 2B (QAD Q4_0) and its projector (Q8_0)
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3-vl.gguf" "$VL_URL"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3-vl-mmproj.gguf" "$MMPROJ_URL"
+          echo "$VL_SHA  $RUNNER_TEMP/lfm3-vl.gguf" | shasum -a 256 -c
+          echo "$MMPROJ_SHA  $RUNNER_TEMP/lfm3-vl-mmproj.gguf" | shasum -a 256 -c
+          stat -f '%z %N' "$RUNNER_TEMP/lfm3-vl.gguf" "$RUNNER_TEMP/lfm3-vl-mmproj.gguf"
+      # The app's copy is LFM3 1.7B's LICENSE byte for byte (check-lfm3.yml);
+      # the VL repo's copy has the same words, its spaces at line ends and
+      # final newline aside, so the words are compared line by line here.
+      - name: LFM3-VL's license is the one the app carries
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/LFM3-VL-LICENSE" https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/b36554cfd35854b06429900131730cd80f092cdb/LICENSE
+          shasum -a 256 "$RUNNER_TEMP/LFM3-VL-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt
+          diff "$RUNNER_TEMP/LFM3-VL-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt || true
+          python3 -I - "$RUNNER_TEMP/LFM3-VL-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt <<'EOF'
+          import sys
+          vl, app = ([line.rstrip() for line in open(path, encoding="utf-8").read().rstrip().splitlines()] for path in sys.argv[1:])
+          print(f"{len(vl)} lines in the VL repo's LICENSE, {len(app)} in the app's")
+          sys.exit(0 if vl == app else "the words differ")
+          EOF
+      - name: LFM3-VL on the CPU
+        timeout-minutes: 30
+        run: |
+          status=0
+          LFM3_VL_GGUF="$RUNNER_TEMP/lfm3-vl.gguf" LFM3_VL_MMPROJ="$RUNNER_TEMP/lfm3-vl-mmproj.gguf" \
+            LFM3_VL_PICTURE="$PWD/PocketGemma/Resources/vision-probe-square.jpg" \
+            swift test --package-path Packages/PocketLlama --filter LFM3VisionTests > build/lfm3-vl/cpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed" build/lfm3-vl/cpu.log
+          grep -E "clip_ctx|clip_encode|mtmd_|llama_decode|failed" build/lfm3-vl/cpu.log | sort | uniq -c | head -40
+          tail -5 build/lfm3-vl/cpu.log
+          exit $status
+      - name: LFM3-VL on Metal
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          status=0
+          LLAMA_GPU=1 LFM3_VL_GGUF="$RUNNER_TEMP/lfm3-vl.gguf" LFM3_VL_MMPROJ="$RUNNER_TEMP/lfm3-vl-mmproj.gguf" \
+            LFM3_VL_PICTURE="$PWD/PocketGemma/Resources/vision-probe-square.jpg" \
+            swift test --package-path Packages/PocketLlama --filter LFM3VisionTests > build/lfm3-vl/gpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed" build/lfm3-vl/gpu.log
+          grep -E "clip_ctx|clip_encode|mtmd_|llama_decode|failed" build/lfm3-vl/gpu.log | sort | uniq -c | head -40
+          tail -5 build/lfm3-vl/gpu.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LFM3-VL-Check-Logs
+          path: build/lfm3-vl
+          retention-days: 7
