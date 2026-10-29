@@ -7,7 +7,7 @@ name: Check LFM3-VL 2B pictures on llama.cpp for 1.1.0 (234)
 on:
   push:
     branches: [claude/project-thread-is5vy0]
-    paths: ['.github/workflows/check-lfm3-vl.yml']
+    paths: ['PocketGemma-source.zip', '.github/workflows/check-lfm3-vl.yml']
   workflow_dispatch:
 permissions:
   contents: read
