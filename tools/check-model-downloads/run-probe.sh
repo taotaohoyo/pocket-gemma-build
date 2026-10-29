@@ -30,11 +30,16 @@ echo "DLPROBE-RUNTIME $runtime_id $device_type"
 simulator_id="$(xcrun simctl create 'Fielua download probe' "$device_type" "$runtime_id")"
 xcrun simctl boot "$simulator_id"
 xcrun simctl bootstatus "$simulator_id" -b > build/Probe/boot.log 2>&1
+# Signed locally (no team, no profile), as check-ui.sh signs the preview for
+# the keychain: iOS's download service ends every background task of an
+# unsigned simulator app at once with NSURLErrorDomain -1 (run 40825923927).
 xcodebuild -project tools/check-model-downloads/probe/DownloadProbe.xcodeproj -scheme DownloadProbe -configuration Release \
   -destination "platform=iOS Simulator,id=$simulator_id" -derivedDataPath build/ProbeDerivedData \
-  CODE_SIGNING_ALLOWED=NO build > build/Probe/compile.log 2>&1 \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- \
+  DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= build > build/Probe/compile.log 2>&1 \
   || { grep -E 'error:|\*\* .* FAILED' build/Probe/compile.log | head -40; exit 65; }
 app="$(find build/ProbeDerivedData/Build/Products/Release-iphonesimulator -maxdepth 1 -name '*.app' | head -1)"
+codesign -dv "$app" 2>&1 | grep -E 'Identifier|Signature' | sed 's/^/DLPROBE-SIGNED /' || true
 xcrun simctl install "$simulator_id" "$app"
 df -h "$HOME" | tail -1
 xcrun simctl launch --console-pty "$simulator_id" app.pocketgemma.download-probe > build/Probe/probe.log 2>&1 &
@@ -60,8 +65,19 @@ files = [json.loads(line.split(' ', 1)[1]) for line in lines if line.startswith(
 models = [json.loads(line.split(' ', 1)[1]) for line in lines if line.startswith('DLPROBE-MODEL ')]
 done = any(line.startswith('DLPROBE-DONE') for line in lines)
 for f in files:
-    print('DLPROBE-SUMMARY', f['case'], f['id'], 'OK' if f.get('ok') else 'FAILED', f.get('bytes', ''), f.get('download_seconds', ''), f.get('error', ''))
-failed = [m for m in models if not m['ok']]
+    print('DLPROBE-SUMMARY', f['case'], f.get('session', 'background'), f['id'], 'OK' if f.get('ok') else 'FAILED',
+          f.get('bytes', ''), f.get('download_seconds', ''), f.get('error', ''))
+for line in lines:
+    if line.startswith(('DLPROBE-FIRST-BYTE ', 'DLPROBE-STALL ', 'DLPROBE-RESUME-DATA ', 'DLPROBE-ERROR ')):
+        print('DLPROBE-SUMMARY', line)
+# A model counts once: by the app's background session, or else by the
+# app's own session (1.1.0 (240)'s way round a stalled background task).
+by_model = {}
+for m in models:
+    key = (m['case'], tuple(m['files']))
+    by_model[key] = by_model.get(key, False) or m['ok']
+failed = [key for key, ok in by_model.items() if not ok]
+models = list(by_model)
 print(f'DLPROBE-RESULT models={len(models)} failed={len(failed)} done={done}')
 sys.exit(0 if done and not failed else 1)
 PY

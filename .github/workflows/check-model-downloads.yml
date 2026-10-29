@@ -39,6 +39,9 @@ jobs:
           echo "matrix=$(python3 -I tools/check-model-downloads/pins.py Packages/PocketCore/Sources/PocketCore/ModelSpec.swift --matrix)" >> "$GITHUB_OUTPUT"
   fetch:
     needs: pins
+    # A push that changes only the probe says [probe only]: the files were
+    # taken whole by run 40825923927.
+    if: ${{ !contains(github.event.head_commit.message, '[probe only]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
