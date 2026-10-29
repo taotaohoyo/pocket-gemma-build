@@ -1,0 +1,94 @@
+name: Judge LFM3-Audio 2B and LFM3-Omni 2B on llama.cpp (1.1.0 (234))
+# Whether LFM3-Audio 2B and LFM3-Omni 2B hear a spoken question through the
+# app's own path (Packages/PocketLlama: LFM3Chat and LlamaVision on llama.cpp
+# b11960's mtmd) on the Mac's CPU: Liquid AI's Q4_0 models and Q8_0
+# projectors, a question spoken by macOS's own voice, Omni with the app's
+# red-square probe picture too. Text replies only. Not part of the app yet.
+on:
+  push:
+    branches: [claude/project-thread-is5vy0]
+    paths: ['.github/workflows/check-lfm3-audio.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lfm3-audio-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lfm3-audio:
+    runs-on: macos-26
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    env:
+      AUDIO_REV: 642697a5597a675cb819ed236ac415c1e60a4f6f
+      AUDIO_SHA: 112e4acb79be79dcd8df5749495614817e51c064cd9ca576aead02b64b2b7584
+      AUDIO_MMPROJ_SHA: 26601e904245a85bd8f3cf320a629e897cfc01c1d09369e8b4fd951f13024d3e
+      OMNI_REV: 2918dd47cfceb4f260cd1734cd1aac1b22bbe4b6
+      OMNI_SHA: 6d2273a383b92dd7c5db0eb4c8dfeae13e805b485a6621c4b391ae179c2b5f28
+      OMNI_MMPROJ_SHA: 720ff4fc09df0e026c4ec641d0c698bf27b5bcd50561944c88eda5e3dffe1839
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: A spoken question in macOS's own voice
+        run: |
+          mkdir -p build/lfm3-audio
+          say -v '?' | grep -iE "ja_JP|en_US" | head -20 || true
+          if say -v '?' | grep -q '^Kyoko'; then
+            said="日本の首都はどこですか？"; voice=Kyoko
+          else
+            said="What is the capital of Japan?"; voice=Samantha
+          fi
+          say -v "$voice" -o "$RUNNER_TEMP/question.aiff" "$said"
+          afconvert -f WAVE -d LEI16@16000 -c 1 "$RUNNER_TEMP/question.aiff" "$RUNNER_TEMP/question.wav"
+          afinfo "$RUNNER_TEMP/question.wav" | grep -E "duration|Data format" || true
+          echo "LFM3_AUDIO_SAID=$said" >> "$GITHUB_ENV"
+          echo "voice $voice: $said"
+      - name: The model cards' llama.cpp notes
+        run: |
+          for repo in "LFM3-Audio-2B-GGUF/resolve/$AUDIO_REV" "LFM3-Omni-2B-GGUF/resolve/$OMNI_REV"; do
+            echo "== $repo/README.md"
+            curl -fsSL --retry 3 "https://huggingface.co/LiquidAI/$repo/README.md" | sed -n '/^# /,$p' | head -80
+          done
+      - name: LFM3-Audio 2B (Q4_0 and its Q8_0 projector)
+        timeout-minutes: 30
+        run: |
+          base="https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/$AUDIO_REV"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/audio.gguf" "$base/LFM3-Audio-2B-Q4_0.gguf?download=true"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/audio-mmproj.gguf" "$base/mmproj-LFM3-Audio-2B-Q8_0.gguf?download=true"
+          echo "$AUDIO_SHA  $RUNNER_TEMP/audio.gguf" | shasum -a 256 -c
+          echo "$AUDIO_MMPROJ_SHA  $RUNNER_TEMP/audio-mmproj.gguf" | shasum -a 256 -c
+          status=0
+          LFM3_AUDIO_LABEL=Audio LFM3_AUDIO_GGUF="$RUNNER_TEMP/audio.gguf" LFM3_AUDIO_MMPROJ="$RUNNER_TEMP/audio-mmproj.gguf" \
+            LFM3_AUDIO_WAV="$RUNNER_TEMP/question.wav" \
+            swift test --package-path Packages/PocketLlama --filter LFM3AudioTests > build/lfm3-audio/audio.log 2>&1 || status=$?
+          grep -E "error:|LFM3AUDIO-TEST|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-audio/audio.log
+          grep -E "clip_ctx|clip_encode|mtmd_|audio|llama_decode|failed" build/lfm3-audio/audio.log | grep -v LFM3AUDIO-TEST | sort | uniq -c | head -40
+          tail -5 build/lfm3-audio/audio.log
+          rm -f "$RUNNER_TEMP/audio.gguf" "$RUNNER_TEMP/audio-mmproj.gguf"
+          exit $status
+      - name: LFM3-Omni 2B (Q4_0 and its Q8_0 projector)
+        if: always()
+        timeout-minutes: 35
+        run: |
+          base="https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/$OMNI_REV"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni.gguf" "$base/LFM3-Omni-2B-Q4_0.gguf?download=true"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni-mmproj.gguf" "$base/mmproj-LFM3-Omni-2B-Q8_0.gguf?download=true"
+          echo "$OMNI_SHA  $RUNNER_TEMP/omni.gguf" | shasum -a 256 -c
+          echo "$OMNI_MMPROJ_SHA  $RUNNER_TEMP/omni-mmproj.gguf" | shasum -a 256 -c
+          status=0
+          LFM3_AUDIO_LABEL=Omni LFM3_AUDIO_GGUF="$RUNNER_TEMP/omni.gguf" LFM3_AUDIO_MMPROJ="$RUNNER_TEMP/omni-mmproj.gguf" \
+            LFM3_AUDIO_WAV="$RUNNER_TEMP/question.wav" LFM3_AUDIO_PICTURE="$PWD/PocketGemma/Resources/vision-probe-square.jpg" \
+            swift test --package-path Packages/PocketLlama --filter LFM3AudioTests > build/lfm3-audio/omni.log 2>&1 || status=$?
+          grep -E "error:|LFM3AUDIO-TEST|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-audio/omni.log
+          grep -E "clip_ctx|clip_encode|mtmd_|audio|llama_decode|failed" build/lfm3-audio/omni.log | grep -v LFM3AUDIO-TEST | sort | uniq -c | head -40
+          tail -5 build/lfm3-audio/omni.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LFM3-Audio-Check-Logs
+          path: build/lfm3-audio
+          retention-days: 7

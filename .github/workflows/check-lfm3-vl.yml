@@ -63,7 +63,8 @@ jobs:
           LFM3_VL_GGUF="$RUNNER_TEMP/lfm3-vl.gguf" LFM3_VL_MMPROJ="$RUNNER_TEMP/lfm3-vl-mmproj.gguf" \
             LFM3_VL_PICTURE="$PWD/PocketGemma/Resources/vision-probe-square.jpg" \
             swift test --package-path Packages/PocketLlama --filter LFM3VisionTests > build/lfm3-vl/cpu.log 2>&1 || status=$?
-          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed|clip|mtmd|llama_|ggml_" build/lfm3-vl/cpu.log | grep -v ggml_metal_library_compile | head -200
+          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed" build/lfm3-vl/cpu.log
+          grep -E "clip_ctx|clip_encode|mtmd_|llama_decode|failed" build/lfm3-vl/cpu.log | sort | uniq -c | head -40
           tail -5 build/lfm3-vl/cpu.log
           exit $status
       - name: LFM3-VL on Metal
@@ -74,7 +75,8 @@ jobs:
           LLAMA_GPU=1 LFM3_VL_GGUF="$RUNNER_TEMP/lfm3-vl.gguf" LFM3_VL_MMPROJ="$RUNNER_TEMP/lfm3-vl-mmproj.gguf" \
             LFM3_VL_PICTURE="$PWD/PocketGemma/Resources/vision-probe-square.jpg" \
             swift test --package-path Packages/PocketLlama --filter LFM3VisionTests > build/lfm3-vl/gpu.log 2>&1 || status=$?
-          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed|clip|mtmd" build/lfm3-vl/gpu.log | head -200
+          grep -E "error:|LFM3VL-TEST|Test Case .* (passed|failed)|XCTAssert|Executed" build/lfm3-vl/gpu.log
+          grep -E "clip_ctx|clip_encode|mtmd_|llama_decode|failed" build/lfm3-vl/gpu.log | sort | uniq -c | head -40
           tail -5 build/lfm3-vl/gpu.log
           exit $status
       - uses: actions/upload-artifact@v4
