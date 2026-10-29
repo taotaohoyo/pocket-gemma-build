@@ -50,6 +50,12 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3-vl-mmproj.gguf" "$MMPROJ_URL"
           echo "$VL_SHA  $RUNNER_TEMP/lfm3-vl.gguf" | shasum -a 256 -c
           echo "$MMPROJ_SHA  $RUNNER_TEMP/lfm3-vl-mmproj.gguf" | shasum -a 256 -c
+          stat -f '%z %N' "$RUNNER_TEMP/lfm3-vl.gguf" "$RUNNER_TEMP/lfm3-vl-mmproj.gguf"
+      - name: LFM3-VL's license is the one the app carries
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/LFM3-VL-LICENSE" https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/b36554cfd35854b06429900131730cd80f092cdb/LICENSE
+          diff "$RUNNER_TEMP/LFM3-VL-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt
+          shasum -a 256 "$RUNNER_TEMP/LFM3-VL-LICENSE"
       - name: LFM3-VL on the CPU
         timeout-minutes: 30
         run: |
