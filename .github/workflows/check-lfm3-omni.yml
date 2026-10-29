@@ -1,0 +1,109 @@
+name: Check LFM3-Omni 2B voice input on llama.cpp for 1.1.0 (236)
+# LFM3-Omni 2B as the app runs it (Packages/PocketLlama: LFM3Chat and
+# LlamaVision on llama.cpp b11960's mtmd) on the Mac's CPU, and on its Metal
+# GPU where the runner has one: questions spoken in macOS's Japanese voice,
+# written as the app's recorder writes them (16 kHz mono 16-bit WAV) and
+# sent with the app's own words (VoiceNote.ask); a spoken question about the
+# app's red-square probe picture, a typed follow-up on an earlier recording,
+# a typed question, and stop. PocketCore's tests, the license the app
+# carries, the files' sizes.
+on:
+  push:
+    branches: [claude/project-thread-is5vy0]
+    paths: ['PocketGemma-source.zip', '.github/workflows/check-lfm3-omni.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lfm3-omni-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lfm3-omni:
+    runs-on: macos-26
+    timeout-minutes: 80
+    defaults:
+      run:
+        shell: bash
+    env:
+      OMNI_REV: 2918dd47cfceb4f260cd1734cd1aac1b22bbe4b6
+      OMNI_SHA: 6d2273a383b92dd7c5db0eb4c8dfeae13e805b485a6621c4b391ae179c2b5f28
+      OMNI_MMPROJ_SHA: 720ff4fc09df0e026c4ec641d0c698bf27b5bcd50561944c88eda5e3dffe1839
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: PocketCore tests
+        timeout-minutes: 15
+        run: |
+          mkdir -p build/lfm3-omni
+          status=0
+          swift test --package-path Packages/PocketCore > build/lfm3-omni/core-tests.log 2>&1 || status=$?
+          grep -E "error:|failed|Executed" build/lfm3-omni/core-tests.log | head -60
+          exit $status
+      - name: Questions spoken in macOS's Japanese voice
+        run: |
+          say -v '?' | grep -iE "ja_JP" | head -5 || true
+          voice=Kyoko
+          say -v '?' | grep -q '^Kyoko' || { echo "no Kyoko voice"; exit 1; }
+          speak() {
+            say -v "$voice" -o "$RUNNER_TEMP/$1.aiff" "$2"
+            afconvert -f WAVE -d LEI16@16000 -c 1 "$RUNNER_TEMP/$1.aiff" "$RUNNER_TEMP/$1.wav"
+            afinfo "$RUNNER_TEMP/$1.wav" | grep -E "duration|Data format" || true
+          }
+          speak capital "日本の首都はどこですか？"
+          speak colour "この画像の図形は何色ですか？"
+          {
+            echo "LFM3_OMNI_CAPITAL=$RUNNER_TEMP/capital.wav"
+            echo "LFM3_OMNI_CAPITAL_SAID=日本の首都はどこですか？"
+            echo "LFM3_OMNI_COLOUR=$RUNNER_TEMP/colour.wav"
+            echo "LFM3_OMNI_COLOUR_SAID=この画像の図形は何色ですか？"
+            echo "LFM3_OMNI_PICTURE=$PWD/PocketGemma/Resources/vision-probe-square.jpg"
+          } >> "$GITHUB_ENV"
+      - name: Download LFM3-Omni 2B (Q4_0) and its projector (Q8_0)
+        run: |
+          base="https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/$OMNI_REV"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni.gguf" "$base/LFM3-Omni-2B-Q4_0.gguf?download=true"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni-mmproj.gguf" "$base/mmproj-LFM3-Omni-2B-Q8_0.gguf?download=true"
+          echo "$OMNI_SHA  $RUNNER_TEMP/omni.gguf" | shasum -a 256 -c
+          echo "$OMNI_MMPROJ_SHA  $RUNNER_TEMP/omni-mmproj.gguf" | shasum -a 256 -c
+          stat -f '%z %N' "$RUNNER_TEMP/omni.gguf" "$RUNNER_TEMP/omni-mmproj.gguf"
+          echo "LFM3_OMNI_GGUF=$RUNNER_TEMP/omni.gguf" >> "$GITHUB_ENV"
+          echo "LFM3_OMNI_MMPROJ=$RUNNER_TEMP/omni-mmproj.gguf" >> "$GITHUB_ENV"
+      # The app carries LFM3 1.7B's LICENSE (check-lfm3.yml); Omni's repo
+      # must have the same words.
+      - name: LFM3-Omni's license is the one the app carries
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/LFM3-Omni-LICENSE" "https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/$OMNI_REV/LICENSE"
+          shasum -a 256 "$RUNNER_TEMP/LFM3-Omni-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt
+          diff "$RUNNER_TEMP/LFM3-Omni-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt || true
+          python3 -I - "$RUNNER_TEMP/LFM3-Omni-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt <<'EOF'
+          import sys
+          omni, app = ([line.rstrip() for line in open(path, encoding="utf-8").read().rstrip().splitlines()] for path in sys.argv[1:])
+          print(f"{len(omni)} lines in the Omni repo's LICENSE, {len(app)} in the app's")
+          sys.exit(0 if omni == app else "the words differ")
+          EOF
+      - name: LFM3-Omni on the CPU
+        timeout-minutes: 35
+        run: |
+          status=0
+          swift test --package-path Packages/PocketLlama --filter LFM3OmniTests > build/lfm3-omni/cpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3OMNI-TEST|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-omni/cpu.log
+          grep -E "clip_ctx|clip_encode|mtmd_|audio|llama_decode|failed" build/lfm3-omni/cpu.log | grep -v LFM3OMNI-TEST | sort | uniq -c | head -40
+          tail -5 build/lfm3-omni/cpu.log
+          exit $status
+      - name: LFM3-Omni on Metal
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          status=0
+          LLAMA_GPU=1 swift test --package-path Packages/PocketLlama --filter LFM3OmniTests > build/lfm3-omni/gpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3OMNI-TEST|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-omni/gpu.log
+          grep -E "Metal|MTL|ggml_metal" build/lfm3-omni/gpu.log | sort | uniq -c | head -20
+          tail -5 build/lfm3-omni/gpu.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LFM3-Omni-Check-Logs
+          path: build/lfm3-omni
+          retention-days: 7
