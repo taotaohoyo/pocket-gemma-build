@@ -1,0 +1,65 @@
+name: Check LFM3 on llama.cpp for 1.1.0 (232)
+# PocketCore's tests, then LFM3 1.7B's real file through the app's own path
+# (Packages/PocketLlama: LFM3Chat on LlamaEngine, llama.cpp b11960) on the
+# Mac's CPU, and on its Metal GPU where the runner has one. The iPhone build
+# links the same package; the simulator has no llama.cpp slice.
+on:
+  push:
+    branches: [claude/project-thread-is5vy0]
+    paths: ['PocketGemma-source.zip', '.github/workflows/check-lfm3.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lfm3-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lfm3:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      LFM3_URL: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/bad5729bba61d076fff20d2548e62526665af215/LFM3-1.7B-QAD-Q4_0.gguf?download=true
+      LFM3_SHA: 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: xcodebuild -version; sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: PocketCore tests
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/lfm3
+          status=0
+          swift test --package-path Packages/PocketCore > build/lfm3/core-tests.log 2>&1 || status=$?
+          grep -E "error:|failed|LFM3Tests|Executed" build/lfm3/core-tests.log | head -120
+          tail -5 build/lfm3/core-tests.log
+          exit $status
+      - name: Download LFM3 1.7B (QAD Q4_0)
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3.gguf" "$LFM3_URL"
+          echo "$LFM3_SHA  $RUNNER_TEMP/lfm3.gguf" | shasum -a 256 -c
+      - name: LFM3 on the CPU
+        timeout-minutes: 15
+        run: |
+          status=0
+          LFM3_GGUF="$RUNNER_TEMP/lfm3.gguf" swift test --package-path Packages/PocketLlama > build/lfm3/cpu.log 2>&1 || status=$?
+          grep -E "error:|warning: unre|LFM3-TEST|Test Case .* (passed|failed)|XCTAssert|Executed|ggml|llama" build/lfm3/cpu.log | head -200
+          tail -5 build/lfm3/cpu.log
+          exit $status
+      - name: LFM3 on Metal
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          status=0
+          LLAMA_GPU=1 LFM3_GGUF="$RUNNER_TEMP/lfm3.gguf" swift test --package-path Packages/PocketLlama > build/lfm3/gpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3-TEST|Test Case .* (passed|failed)|XCTAssert|Executed|ggml|llama|Metal|MTL" build/lfm3/gpu.log | head -200
+          tail -5 build/lfm3/gpu.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LFM3-Check-Logs
+          path: build/lfm3
+          retention-days: 7
