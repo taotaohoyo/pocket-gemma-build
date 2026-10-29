@@ -1,0 +1,77 @@
+name: Check every model download (1.1.0 (240))
+# Every file the app downloads (the models and their parts, read from
+# ModelSpec.swift in PocketGemma-source.zip, so the pins checked are the
+# ones the app ships):
+# - fetch: on Linux, the Hub's record of the pinned revision, every redirect
+#   of the app's URL, ranges, and the whole file's bytes and SHA-256, taken
+#   in two pieces as a resumed download is (tools/check-model-downloads/fetch.py);
+# - probe: in the iOS simulator, the app's own background URLSession setup,
+#   requests and file check for every model, E2B again after deleting it,
+#   and a download stopped with resume data and resumed
+#   (tools/check-model-downloads/probe).
+on:
+  push:
+    branches: [claude/project-thread-2g8c37]
+    paths: ['.github/workflows/check-model-downloads.yml', 'tools/check-model-downloads/**']
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: Run the iOS simulator probe too
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: model-downloads-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pins.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip Packages/PocketCore/Sources/PocketCore/ModelSpec.swift
+      - id: pins
+        run: |
+          python3 -I tools/check-model-downloads/pins.py Packages/PocketCore/Sources/PocketCore/ModelSpec.swift
+          echo "matrix=$(python3 -I tools/check-model-downloads/pins.py Packages/PocketCore/Sources/PocketCore/ModelSpec.swift --matrix)" >> "$GITHUB_OUTPUT"
+  fetch:
+    needs: pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pins.outputs.matrix) }}
+    name: fetch ${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ matrix.file }}
+        env:
+          PIN: ${{ toJSON(matrix) }}
+        run: |
+          echo '| id | file | end host | bytes | SHA-256 | speed | result |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|---|---|---|---|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          python3 -I tools/check-model-downloads/fetch.py "$PIN"
+  probe:
+    if: github.event_name == 'push' || inputs.probe
+    runs-on: macos-26
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: brew install xcodegen
+      - run: df -h "$HOME"; sysctl -n hw.memsize hw.ncpu
+      - name: The app's downloads in the iOS simulator
+        timeout-minutes: 70
+        run: bash tools/check-model-downloads/run-probe.sh 60
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Model-Download-Probe
+          path: build/Probe
+          retention-days: 7

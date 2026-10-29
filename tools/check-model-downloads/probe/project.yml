@@ -1,0 +1,31 @@
+# The download probe app (Probe.swift) for the iOS simulator; scripts:
+# tools/check-model-downloads/run-probe.sh. PocketCore is the app's own,
+# from the unzipped PocketGemma-source.zip at the repository root.
+name: DownloadProbe
+options:
+  deploymentTarget:
+    iOS: "26.4"
+packages:
+  PocketCore:
+    path: ../../../Packages/PocketCore
+targets:
+  DownloadProbe:
+    type: application
+    platform: iOS
+    sources:
+      - path: Probe.swift
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Download Probe
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.pocketgemma.download-probe
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: PocketCore
