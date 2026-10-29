@@ -12,7 +12,7 @@ permissions:
   contents: read
 concurrency:
   group: lfm3-check-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   lfm3:
     runs-on: macos-26
@@ -27,6 +27,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o -q PocketGemma-source.zip
       - run: xcodebuild -version; sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: The bundled licenses match their sources
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/llama-LICENSE" https://raw.githubusercontent.com/ggml-org/llama.cpp/b11960/LICENSE
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/LFM-LICENSE" https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/ac2586a34f1a1c03329dbdcdefabd8b6478ddaa7/LICENSE
+          status=0
+          diff "$RUNNER_TEMP/llama-LICENSE" PocketGemma/Resources/Licenses/llama.cpp.txt || status=1
+          diff "$RUNNER_TEMP/LFM-LICENSE" PocketGemma/Resources/Licenses/LFM-Open-License-v1.0.txt || status=1
+          shasum -a 256 "$RUNNER_TEMP/llama-LICENSE" "$RUNNER_TEMP/LFM-LICENSE" PocketGemma/Resources/Licenses/*.txt
+          exit $status
       - name: PocketCore tests
         timeout-minutes: 10
         run: |

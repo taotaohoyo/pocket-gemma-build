@@ -1,4 +1,4 @@
-"""Finds the newest llama.cpp release (ggml-org) and the first whose notes
+"""Prints the newest llama.cpp releases (ggml-org) and the chosen one (b11960
 = v0.8.0, after LFM3 support, PR 31252 merged 2026-10-27) with its
 assets, and writes TAG, the xcframework URL and its SHA-256 (which is the
 SwiftPM checksum of a binary target) to the file given.
