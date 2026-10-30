@@ -41,7 +41,7 @@ jobs:
     needs: pins
     # A push that changes only the probe says [probe only]: the files were
     # taken whole by run 40825923927.
-    if: ${{ !contains(github.event.head_commit.message, '[probe only]') && !contains(github.event.head_commit.message, '[net only]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[probe only]') && !contains(github.event.head_commit.message, '[net only]') && !contains(github.event.head_commit.message, '[speed only]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -69,8 +69,23 @@ jobs:
           url=$(python3 -I tools/check-model-downloads/pins.py Packages/PocketCore/Sources/PocketCore/ModelSpec.swift --matrix \
             | python3 -I -c 'import json, sys; print(next(p["url"] for p in json.load(sys.stdin)["include"] if p["id"] == "gemma-4-e2b"))')
           bash tools/check-model-downloads/net.sh "$url"
+  # Short and long, cold and warm, one and four connections, HTTP/2 and
+  # HTTP/1.1, from the runner's file server and a Singapore one, and the
+  # Hub's Xet route (tools/check-model-downloads/speed.sh).
+  speed:
+    needs: pins
+    if: ${{ contains(github.event.head_commit.message, '[speed only]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip Packages/PocketCore/Sources/PocketCore/ModelSpec.swift
+      - run: |
+          pins=$(python3 -I tools/check-model-downloads/pins.py Packages/PocketCore/Sources/PocketCore/ModelSpec.swift --matrix)
+          pick() { python3 -I -c 'import json, sys; p = next(p for p in json.loads(sys.argv[1])["include"] if p["id"] == sys.argv[2]); print(p[sys.argv[3]])' "$pins" "$1" "$2"; }
+          bash tools/check-model-downloads/speed.sh "$(pick gemma-4-e2b url)" "$(pick lfm3-17b url)" "$(pick lfm3-17b bytes)"
   probe:
-    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[net only]')) || inputs.probe }}
+    if: ${{ (github.event_name == 'push' && !contains(github.event.head_commit.message, '[net only]') && !contains(github.event.head_commit.message, '[speed only]')) || inputs.probe }}
     runs-on: macos-26
     timeout-minutes: 75
     defaults:
