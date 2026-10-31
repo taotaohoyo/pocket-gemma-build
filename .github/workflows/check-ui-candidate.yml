@@ -25,7 +25,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/UI
-          swift test --package-path Packages/PocketCore 2>&1 | tee build/UI/core.log
+          # The failures again at the end, where the log's tail shows them.
+          swift test --package-path Packages/PocketCore 2>&1 | tee build/UI/core.log \
+            || { echo 'CORE-FAILURES'; grep -E "error:|' failed" build/UI/core.log | head -40; exit 1; }
       - if: inputs.scope != 'core'
         run: brew install xcodegen
       # 1.1.0 (238) crashed at launch on the phone: the main thread ran out of
