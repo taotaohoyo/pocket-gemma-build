@@ -4,12 +4,14 @@ For the app, each extension and the Apple Watch app it compares the
 signature's entitlements, the embedded App Store profile and the bundle
 identifier: the App ID and team match, the memory entitlements are exactly
 the ones asked for and only on the app (never on the Live Activity extension
-or the watch app, never the debugging variant), and every entitlement the
-code claims is one the profile grants.
+or the watch app, never the debugging variant), with --icloud private the
+app (only) has its own iCloud container for iCloud Documents (Production
+once exported), and every entitlement the code claims is one the profile
+grants.
 With --adhoc it checks only the entitlements sign-archive.sh wrote, before
 the export. Prints check names and results only: never the team ID, the
 developer's name or the profile's name, because the job log is public.
-Usage: TEAM_ID=<team> BUNDLE_ID=<app identifier> check-export.py <ipa | .app> --memory <eva+iml|eva|iml|none> [--adhoc]
+Usage: TEAM_ID=<team> BUNDLE_ID=<app identifier> check-export.py <ipa | .app> --memory <eva+iml|eva|iml|none> [--icloud <private|none>] [--adhoc]
 """
 import argparse
 import datetime
@@ -27,6 +29,11 @@ IML = 'com.apple.developer.kernel.increased-memory-limit'
 DEBUG_LIMIT = 'com.apple.developer.kernel.increased-debugging-memory-limit'
 MEMORY = {'eva+iml': {EVA, IML}, 'eva': {EVA}, 'iml': {IML}, 'none': set()}
 SHORT = {EVA: 'Extended Virtual Addressing', IML: 'Increased Memory Limit'}
+ICLOUD_CONTAINERS = 'com.apple.developer.icloud-container-identifiers'
+UBIQUITY_CONTAINERS = 'com.apple.developer.ubiquity-container-identifiers'
+ICLOUD_SERVICES = 'com.apple.developer.icloud-services'
+ICLOUD_ENVIRONMENT = 'com.apple.developer.icloud-container-environment'
+ICLOUD_KEYS = (ICLOUD_CONTAINERS, UBIQUITY_CONTAINERS, ICLOUD_SERVICES, ICLOUD_ENVIRONMENT)
 
 
 def granted(profile, key, value):
@@ -41,13 +48,14 @@ def granted(profile, key, value):
             return item.startswith(pattern[:-1])
         return pattern == item
 
+    items = value if isinstance(value, list) else [value]
     if isinstance(allowed, list):
-        items = value if isinstance(value, list) else [value]
         return all(any(matches(pattern, item) for pattern in allowed) for item in items)
-    return matches(allowed, value)
+    # A single grant, such as "*" for iCloud services, covers each value.
+    return all(matches(allowed, item) for item in items)
 
 
-def check_target(name, identifier, is_app, entitlements, team, memory, app_id, profile=None, signature=None, now=None):
+def check_target(name, identifier, is_app, entitlements, team, memory, app_id, profile=None, signature=None, now=None, icloud=False):
     """Returns [(ok, target, check)] for one signed bundle. profile and
     signature are None for an ad hoc signature."""
     rows = []
@@ -71,6 +79,14 @@ def check_target(name, identifier, is_app, entitlements, team, memory, app_id, p
         else:
             add(key not in entitlements, f'{label}: off')
     add(DEBUG_LIMIT not in entitlements, 'no Increased Debugging Memory Limit')
+    if is_app and icloud:
+        container = f'iCloud.{app_id}'
+        add(entitlements.get(ICLOUD_CONTAINERS) == [container], f'iCloud container is iCloud.{app_id} only')
+        add(entitlements.get(UBIQUITY_CONTAINERS) == [container], 'iCloud Documents container is the same')
+        add('CloudDocuments' in (entitlements.get(ICLOUD_SERVICES) or []), 'iCloud services include CloudDocuments')
+        add(entitlements.get(ICLOUD_ENVIRONMENT) == 'Production', 'iCloud environment: Production')
+    else:
+        add(not any(key in entitlements for key in ICLOUD_KEYS), 'iCloud: off')
     if profile is None:
         return rows
 
@@ -91,6 +107,9 @@ def check_target(name, identifier, is_app, entitlements, team, memory, app_id, p
     add(not missing, 'every signed entitlement is granted by the profile' + (f' (missing: {", ".join(missing)})' if missing else ''))
     for key in sorted(wanted):
         add(granted_entitlements.get(key) is True, f'profile grants {SHORT[key]}')
+    if is_app and icloud:
+        add(granted(granted_entitlements, ICLOUD_CONTAINERS, f'iCloud.{app_id}'),
+            f'profile grants the iCloud container iCloud.{app_id} (App ID: iCloud on, container assigned)')
     if signature is not None:
         add(signature.get('team') == team, 'signature team = TEAM')
         add(signature.get('distribution', False), 'signed with a distribution certificate')
@@ -132,6 +151,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('path', help='a signed .ipa, or an .app inside an archive')
     parser.add_argument('--memory', choices=sorted(MEMORY), required=True)
+    parser.add_argument('--icloud', choices=['private', 'none'], default='none',
+                        help="the app's own iCloud container for iCloud Documents (1.1.0 (252) on)")
     parser.add_argument('--adhoc', action='store_true', help='check the ad hoc signature from sign-archive.sh')
     args = parser.parse_args()
     team = os.environ.get('TEAM_ID', '').strip()
@@ -141,6 +162,7 @@ def main():
     if not app_id:
         sys.exit('BUNDLE_ID (the app\'s App ID) is missing')
     memory = MEMORY[args.memory]
+    icloud = args.icloud == 'private'
 
     work = None
     app = args.path
@@ -164,12 +186,12 @@ def main():
             signature = read_signature(bundle)
             if args.adhoc:
                 rows.append((signature['adhoc'], name, 'ad hoc signature (before export)'))
-                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory, app_id)
+                rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory, app_id, icloud=icloud)
             else:
                 profile = read_profile(bundle)
                 rows.append((profile is not None, name, 'embedded App Store profile'))
                 rows += check_target(name, identifier, is_app, read_entitlements(bundle), team, memory, app_id,
-                                     profile or {}, signature)
+                                     profile or {}, signature, icloud=icloud)
         verify = run(['codesign', '--verify', '--deep', '--strict', app])
         rows.append((verify.returncode == 0, os.path.basename(app), 'codesign --verify --deep --strict'))
     finally:
@@ -177,7 +199,7 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
 
     stage = 'ad hoc, before export' if args.adhoc else 'signed for App Store Connect'
-    lines = [f'Signing check ({stage}); memory entitlements asked for: {args.memory}']
+    lines = [f'Signing check ({stage}); memory entitlements asked for: {args.memory}; iCloud: {args.icloud}']
     lines += [f'{"OK" if ok else "NG"}  {target}: {check}' for ok, target, check in rows]
     failed = [row for row in rows if not row[0]]
     lines.append('All checks passed' if not failed else f'{len(failed)} check(s) failed')

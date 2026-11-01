@@ -10,11 +10,16 @@
 # and passes TestFlight App Review. Nothing is uploaded unless the check
 # passes. No IPA, profile or full log leaves the runner; the public job log
 # shows only filtered, redacted lines.
-# Usage: TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 MEMORY TESTERS [XCODE] export-upload.sh <xcarchive>
+# ICLOUD private (the app signed with its iCloud container) exports it for
+# iCloud's Production environment, the one TestFlight and the App Store use.
+# Usage: TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 MEMORY TESTERS [ICLOUD] [XCODE] export-upload.sh <xcarchive>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 archive="$1"
 : "${MEMORY:?which memory entitlements the archive was signed with}"
+ICLOUD="${ICLOUD:-none}"
+case "$ICLOUD" in private|none) ;; *) echo "ICLOUD must be private or none, not '$ICLOUD'"; exit 64 ;; esac
+export ICLOUD
 case "${TESTERS:-}" in
   internal-only|internal-and-external) ;;
   *) echo "TESTERS must be internal-only or internal-and-external, not '${TESTERS:-}'"; exit 64 ;;
@@ -57,18 +62,21 @@ export_archive() {
   local log="$RUNNER_TEMP/export-$destination.log"
   python3 - "$options" "$destination" <<'PY'
 import os, plistlib, sys
+options = {
+    'method': 'app-store-connect',
+    'destination': sys.argv[2],
+    'signingStyle': 'automatic',
+    'teamID': os.environ['TEAM_ID'],
+    # internal-only: internal testers only, never external groups or
+    # App Review. The flag can't be changed after the upload.
+    'testFlightInternalTestingOnly': os.environ['TESTERS'] == 'internal-only',
+    'manageAppVersionAndBuildNumber': False,
+    'uploadSymbols': True,
+}
+if os.environ['ICLOUD'] == 'private':
+    options['iCloudContainerEnvironment'] = 'Production'
 with open(sys.argv[1], 'wb') as handle:
-    plistlib.dump({
-        'method': 'app-store-connect',
-        'destination': sys.argv[2],
-        'signingStyle': 'automatic',
-        'teamID': os.environ['TEAM_ID'],
-        # internal-only: internal testers only, never external groups or
-        # App Review. The flag can't be changed after the upload.
-        'testFlightInternalTestingOnly': os.environ['TESTERS'] == 'internal-only',
-        'manageAppVersionAndBuildNumber': False,
-        'uploadSymbols': True,
-    }, handle)
+    plistlib.dump(options, handle)
 PY
   local status=0
   xcodebuild -exportArchive \
@@ -102,7 +110,7 @@ if [[ $status -eq 0 ]]; then
     echo 'The export made no IPA to check'
     status=1
   else
-    python3 "$here/check-export.py" "$ipa" --memory "$MEMORY" || status=$?
+    python3 "$here/check-export.py" "$ipa" --memory "$MEMORY" --icloud "$ICLOUD" || status=$?
   fi
 fi
 rm -rf "$checked"
