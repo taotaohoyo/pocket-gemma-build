@@ -41,6 +41,7 @@
    - Live Activity の拡張：`com.fielua.app.activity`
    - Apple Watch のアプリ（1.1.0 (149) から）：`com.fielua.app.watchkitapp`
    - アプリの App ID では、Extended Virtual Address Space と Increased Memory Limit をオンにします（`memory_entitlements` の既定 `eva+iml` に要ります）。拡張と Watch アプリの App ID ではオンにしません。
+   - 1.1.0 (252) から：Identifiers の iCloud Containers で `iCloud.com.fielua.app` を登録し、アプリの App ID で iCloud をオンにして、そのコンテナを割り当てます（`icloud` の既定 `private` に要ります）。拡張と Watch アプリの App ID ではオンにしません。
 2. App Store Connect で、新規 App を作ります。Bundle ID は `com.fielua.app` にします。名前は App Store 全体で重ならないものにします（今は Fielua）。iPhone のホーム画面の名前は、アプリの設定どおり（1.0.123 から「Fielua」）です。
 3. TestFlight の内部テスターのグループを作り、自分を入れます。
 4. App Store Connect の「ユーザとアクセス」から「統合」、「App Store Connect API」を開きます。チームキーを **Admin** のアクセスで作ります。
@@ -67,6 +68,7 @@
 1. Actions の「Upload a build to TestFlight」を、main で手動実行します。
    - `source_ref` には、ビルドするブランチかコミットを入れます。
    - `memory_entitlements` は、ふだんは `eva+iml` のままにします。片方だけの効き目を比べるときは `eva` か `iml`、付けない版は `none` にします。選んだ権限が App ID でオンになっていないと、書き出しか確かめで止まり、何も上がりません。
+   - `icloud` は、ふだんは `private` のままにします。会話の自動保存を、Fielua 専用の iCloud（「ファイル」アプリに出ない場所）に置くための権限を、アプリにだけ付けます。App ID にコンテナが割り当てられていないと、書き出しか確かめで止まり、何も上がりません。付けない版は `none` にします。
    - `testers` は、ふだんは `internal-and-external` のままにします。内部テスターはどちらでも使えます。`internal-only` で上げたビルドは、あとから外部グループにも App Review にも出せません（上げたあとでは変えられません）。外部に出すには、新しいビルド番号で上げ直すことになります。
    - `beta_group` には、ビルドを入れる TestFlight グループの名前（例：`自分用`）を入れます。空のままなら、アップロードだけします（グループの一覧はログに出ます）。
    - `whats_new` には、テスターに見せるテスト内容（このビルドで変わったことと、試してほしいこと）を入れます。4000 文字まで、絵文字と `<` は使えません（`<` の代わりに `＜`）。改行は、API から実行するときはそのまま入れ、実行画面の1行の欄では `\n` と書きます。空のままなら、テスト内容は空のままです。
