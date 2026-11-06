@@ -1,0 +1,33 @@
+# Fielua's relay to the Claude API (Cloudflare Workers).
+# The API key and the admin key are Worker secrets, set in the Cloudflare
+# dashboard (Workers & Pages > fielua-claude > Settings > Variables and
+# Secrets): ANTHROPIC_API_KEY and ADMIN_TOKEN. Never put them here, in
+# GitHub, or in the app.
+name = "fielua-claude"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+# Who may use the relay (the developer, invited friends), their invites,
+# and the relay's switches, in one SQLite-backed Durable Object: changes
+# take effect at once, everywhere (a revoked friend is refused on the next
+# request). Durable Objects with SQLite storage are on the Workers Free plan.
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "Registry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Registry"]
+
+# Not secret. Changed here and deployed again.
+[vars]
+CLAUDE_MODEL = "claude-opus-5-5"
+CLAUDE_MAX_TOKENS = "16000"
+CLAUDE_EFFORT = "medium"
+
+# No request logs: conversations and keys never reach Cloudflare's logs.
+[observability]
+enabled = false

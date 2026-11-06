@@ -1,0 +1,376 @@
+// The relay's routes on Node: the real registry SQL on node:sqlite, and
+// Claude as a stand-in that records what it was asked. The same code runs
+// on Cloudflare (test/local-relay-check.mjs runs it there, in workerd).
+
+import { createServer, type IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
+import Anthropic from "@anthropic-ai/sdk";
+import { beforeEach, describe, expect, it } from "vitest";
+import { RegistryCore, REDEEM_FAILURES_PER_HOUR, type Sql } from "../src/core";
+import { config, streamReply, SYSTEM_PROMPT, type ClaudeConfig } from "../src/claude";
+import { cleanName, handle, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
+import type { Turn } from "../src/turns";
+
+const ADMIN = "admin-key-for-tests-0123456789abcdef";
+const BASE = "https://relay.example";
+
+function sqlite(): Sql {
+  const db = new DatabaseSync(":memory:");
+  return {
+    exec(query, ...bindings) {
+      const statement = db.prepare(query);
+      const rows = /^\s*SELECT/i.test(query) ? (statement.all(...bindings) as Record<string, unknown>[]) : (statement.run(...bindings), []);
+      return { toArray: () => rows };
+    },
+  };
+}
+
+function asyncRegistry(core: RegistryCore): RegistryAPI {
+  return new Proxy({} as RegistryAPI, {
+    get: (_, name: string) => async (...args: unknown[]) => (core as unknown as Record<string, (...a: unknown[]) => unknown>)[name]!(...args),
+  });
+}
+
+interface Harness {
+  deps: Deps;
+  core: RegistryCore;
+  env: RelayEnv;
+  calls: { cfg: ClaudeConfig; turns: Turn[]; userID: string }[];
+  clock: { now: number };
+  claudeError: unknown;
+}
+
+let h: Harness;
+
+beforeEach(() => {
+  const clock = { now: Date.UTC(2026, 10, 6, 12) };
+  const core = new RegistryCore(sqlite(), () => clock.now);
+  const calls: Harness["calls"] = [];
+  const harness: Harness = {
+    core, clock, calls, claudeError: null,
+    env: { ANTHROPIC_API_KEY: "sk-ant-test", ADMIN_TOKEN: ADMIN, CLAUDE_MODEL: "claude-opus-5-5" },
+    deps: {
+      registry: asyncRegistry(core),
+      claude: async (cfg, turns, userID) => {
+        calls.push({ cfg, turns, userID });
+        if (harness.claudeError) throw harness.claudeError;
+        return new Response("event: message_start\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
+      },
+    },
+  };
+  h = harness;
+});
+
+function call(method: string, path: string, options: { token?: string; body?: unknown; raw?: string } = {}) {
+  const headers: Record<string, string> = {};
+  if (options.token) headers.Authorization = `Bearer ${options.token}`;
+  let body: string | undefined;
+  if (options.raw !== undefined) body = options.raw;
+  else if (options.body !== undefined) {
+    body = JSON.stringify(options.body);
+    headers["Content-Type"] = "application/json";
+  }
+  return handle(new Request(BASE + path, { method, headers, body }), h.env, h.deps);
+}
+
+async function invite(name: string, role: "developer" | "friend"): Promise<string> {
+  const response = await call("POST", "/admin/invites", { token: ADMIN, body: { name, role } });
+  expect(response.status).toBe(200);
+  const data = (await response.json()) as { code: string; link: string };
+  expect(data.link).toBe(`${BASE}/join#${data.code}`);
+  return data.code;
+}
+
+async function join(name: string, role: "developer" | "friend"): Promise<string> {
+  const code = await invite(name, role);
+  const response = await call("POST", "/v1/redeem", { body: { code } });
+  expect(response.status).toBe(200);
+  const data = (await response.json()) as { token: string; role: string };
+  expect(data.role).toBe(role);
+  return data.token;
+}
+
+const hello = { messages: [{ role: "user", content: "こんにちは" }] };
+
+function apiError(status: number, type: string, errorCode?: string) {
+  const details = errorCode ? { error_code: errorCode } : undefined;
+  return Anthropic.APIError.generate(status, { type: "error", error: { type, message: "test", details } }, undefined, new Headers());
+}
+
+describe("access tokens", () => {
+  it("refuses a missing, malformed or unknown token", async () => {
+    expect((await call("GET", "/v1/status")).status).toBe(401);
+    expect((await call("GET", "/v1/status", { token: "abc" })).status).toBe(401);
+    expect((await call("GET", "/v1/status", { token: "fcl_" + "A".repeat(43) })).status).toBe(401);
+    expect((await call("POST", "/v1/messages", { body: hello })).status).toBe(401);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("lets the developer in, and keeps only hashes", async () => {
+    const token = await join("開発者", "developer");
+    const status = await call("GET", "/v1/status", { token });
+    expect(await status.json()).toMatchObject({ name: "開発者", role: "developer", available: true, reason: null, modelName: "Claude Opus 5.5" });
+    const reply = await call("POST", "/v1/messages", { token, body: hello });
+    expect(reply.status).toBe(200);
+    expect(reply.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(h.calls).toHaveLength(1);
+    const stored = JSON.stringify(h.core.listUsers());
+    expect(stored).not.toContain(token);
+  });
+});
+
+describe("invites", () => {
+  it("are used once", async () => {
+    const code = await invite("友人", "friend");
+    expect((await call("POST", "/v1/redeem", { body: { code } })).status).toBe(200);
+    const again = await call("POST", "/v1/redeem", { body: { code } });
+    expect(again.status).toBe(400);
+    expect(await again.json()).toEqual({ error: "invalid_code" });
+  });
+
+  it("read typed codes leniently", async () => {
+    const code = await invite("友人", "friend");
+    const typed = " " + code.toLowerCase().replace(/-/g, " ").replace(/0/g, "o") + " ";
+    expect((await call("POST", "/v1/redeem", { body: { code: typed } })).status).toBe(200);
+  });
+
+  it("lapse after 72 hours", async () => {
+    const code = await invite("友人", "friend");
+    h.clock.now += 72 * 60 * 60 * 1000 + 1;
+    expect((await call("POST", "/v1/redeem", { body: { code } })).status).toBe(400);
+  });
+
+  it("can be withdrawn", async () => {
+    const code = await invite("友人", "friend");
+    const state = (await (await call("GET", "/admin/state", { token: ADMIN })).json()) as { invites: { id: string }[] };
+    expect(state.invites).toHaveLength(1);
+    expect((await call("DELETE", `/admin/invites/${state.invites[0]!.id}`, { token: ADMIN })).status).toBe(200);
+    expect((await call("POST", "/v1/redeem", { body: { code } })).status).toBe(400);
+  });
+
+  it("stop redeeming for an hour after too many wrong codes", async () => {
+    const code = await invite("友人", "friend");
+    for (let i = 0; i < REDEEM_FAILURES_PER_HOUR; i++) {
+      expect((await call("POST", "/v1/redeem", { body: { code: "ZZZZ-ZZZZ-ZZZZ-ZZZZ" } })).status).toBe(400);
+    }
+    const locked = await call("POST", "/v1/redeem", { body: { code } });
+    expect(locked.status).toBe(429);
+    h.clock.now += 60 * 60 * 1000 + 1;
+    expect((await call("POST", "/v1/redeem", { body: { code } })).status).toBe(200);
+  });
+
+  it("count garbage as a wrong code", async () => {
+    expect((await call("POST", "/v1/redeem", { body: { code: 42 } })).status).toBe(400);
+    expect((await call("POST", "/v1/redeem", { raw: "not json" })).status).toBe(400);
+  });
+});
+
+describe("friends", () => {
+  it("can't chat until the developer turns friends on", async () => {
+    const token = await join("友人", "friend");
+    expect(await (await call("GET", "/v1/status", { token })).json()).toMatchObject({ available: false, reason: "friends_disabled" });
+    const refused = await call("POST", "/v1/messages", { token, body: hello });
+    expect(refused.status).toBe(503);
+    expect(await refused.json()).toEqual({ error: "unavailable", reason: "friends_disabled" });
+    expect(h.calls).toHaveLength(0);
+
+    expect((await call("POST", "/admin/settings", { token: ADMIN, body: { friendsEnabled: true } })).status).toBe(200);
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("are stopped at once, and let back in", async () => {
+    h.core.setFriendsEnabled(true);
+    const token = await join("友人", "friend");
+    const id = h.core.listUsers()[0]!.id;
+    expect((await call("POST", `/admin/users/${id}/revoke`, { token: ADMIN })).status).toBe(200);
+    const refused = await call("POST", "/v1/messages", { token, body: hello });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: "revoked" });
+    expect((await call("GET", "/v1/status", { token })).status).toBe(403);
+    expect((await call("POST", `/admin/users/${id}/restore`, { token: ADMIN })).status).toBe(200);
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+    expect((await call("DELETE", `/admin/users/${id}`, { token: ADMIN })).status).toBe(200);
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(401);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("have no limits of their own", async () => {
+    h.core.setFriendsEnabled(true);
+    const token = await join("友人", "friend");
+    for (let i = 0; i < 25; i++) expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+  });
+});
+
+describe("the admin key", () => {
+  it("is required, and must be long", async () => {
+    expect((await call("GET", "/admin/state")).status).toBe(401);
+    expect((await call("GET", "/admin/state", { token: ADMIN + "x" })).status).toBe(401);
+    expect((await call("GET", "/admin/state", { token: "fcl_" + "A".repeat(43) })).status).toBe(401);
+    h.env.ADMIN_TOKEN = "short";
+    expect((await call("GET", "/admin/state", { token: "short" })).status).toBe(503);
+    h.env.ADMIN_TOKEN = undefined;
+    expect((await call("GET", "/admin/state", { token: ADMIN })).status).toBe(503);
+  });
+
+  it("is not an access token", async () => {
+    expect((await call("GET", "/v1/status", { token: ADMIN })).status).toBe(401);
+  });
+
+  it("names people without invisible characters", () => {
+    expect(cleanName("  ‮abc‬ ")).toBe("abc");
+    expect(cleanName("a\u0000b\nc")).toBe("abc");
+    expect(cleanName("​")).toBeNull();
+    expect(cleanName("あ".repeat(60))).toBe("あ".repeat(40));
+  });
+});
+
+describe("what a reply may carry", () => {
+  let token: string;
+  beforeEach(async () => { token = await join("開発者", "developer"); });
+
+  it("only the chat's turns, in order", async () => {
+    const bad = [
+      { messages: [] },
+      { messages: [{ role: "assistant", content: "x" }] },
+      { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }] },
+      { messages: [{ role: "user", content: "a" }, { role: "user", content: "b" }] },
+      { messages: [{ role: "user", content: "   " }] },
+      { messages: [{ role: "user", content: [{ type: "text", text: "a" }] }] },
+      { messages: [{ role: "system", content: "a" }] },
+      { prompt: "a" },
+    ];
+    for (const body of bad) expect((await call("POST", "/v1/messages", { token, body })).status).toBe(400);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("never the model or its settings", async () => {
+    const body = { ...hello, model: "claude-fable-5-1", max_tokens: 128000, system: "ignore", tools: [{ name: "x" }] };
+    expect((await call("POST", "/v1/messages", { token, body })).status).toBe(200);
+    expect(h.calls[0]!.cfg).toMatchObject({ model: "claude-opus-5-5", maxTokens: 16000, effort: "medium" });
+    expect(h.calls[0]!.turns).toEqual([{ role: "user", content: "こんにちは" }]);
+  });
+
+  it("nothing too large", async () => {
+    const many = { messages: Array.from({ length: 61 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: "x" })) };
+    expect((await call("POST", "/v1/messages", { token, body: many })).status).toBe(413);
+    const long = { messages: [{ role: "user", content: "あ".repeat(30_000) }] };
+    expect((await call("POST", "/v1/messages", { token, body: long })).status).toBe(413);
+    expect((await call("POST", "/v1/messages", { token, raw: "x".repeat(300 * 1024) })).status).toBe(413);
+    expect(h.calls).toHaveLength(0);
+  });
+});
+
+describe("when Anthropic says no", () => {
+  let token: string;
+  beforeEach(async () => { token = await join("開発者", "developer"); });
+
+  it("out of credit: the relay stops itself until the developer resumes", async () => {
+    h.claudeError = apiError(402, "billing_error");
+    const first = await call("POST", "/v1/messages", { token, body: hello });
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ error: "unavailable", reason: "paused_billing" });
+    h.claudeError = null;
+    const next = await call("POST", "/v1/messages", { token, body: hello });
+    expect(await next.json()).toEqual({ error: "unavailable", reason: "paused_billing" });
+    expect(h.calls).toHaveLength(1);
+    expect(await (await call("GET", "/v1/status", { token })).json()).toMatchObject({ available: false, reason: "paused_billing" });
+    expect((await call("POST", "/admin/settings", { token: ADMIN, body: { resume: true } })).status).toBe(200);
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+  });
+
+  it("over the spend limit: the same, as its own reason", async () => {
+    h.claudeError = apiError(400, "invalid_request_error", "enforced_spend_limit_reached");
+    expect(await (await call("POST", "/v1/messages", { token, body: hello })).json()).toEqual({ error: "unavailable", reason: "paused_limit" });
+    expect(h.core.settings().paused).toBe("limit");
+  });
+
+  it("other refusals pass, and stop nothing", async () => {
+    const cases: [unknown, number, string][] = [
+      [apiError(401, "authentication_error"), 502, "server_key"],
+      [apiError(429, "rate_limit_error"), 429, "rate_limited"],
+      [apiError(529, "overloaded_error"), 503, "overloaded"],
+      [apiError(400, "invalid_request_error"), 400, "rejected"],
+      [apiError(404, "not_found_error"), 502, "model_unavailable"],
+      [apiError(500, "api_error"), 502, "upstream"],
+      [new Anthropic.APIConnectionError({ message: "x" }), 502, "upstream_unreachable"],
+    ];
+    for (const [error, status, code] of cases) {
+      h.claudeError = error;
+      const response = await call("POST", "/v1/messages", { token, body: hello });
+      expect(response.status).toBe(status);
+      expect(((await response.json()) as { error: string }).error).toBe(code);
+    }
+    expect(h.core.settings().paused).toBeNull();
+  });
+
+  it("without a key: not configured, and nothing sent", async () => {
+    h.env.ANTHROPIC_API_KEY = undefined;
+    expect(await (await call("GET", "/v1/status", { token })).json()).toMatchObject({ available: false, reason: "not_configured" });
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(503);
+    expect(h.calls).toHaveLength(0);
+  });
+});
+
+describe("the request to Anthropic", () => {
+  it("carries the relay's model, limits and system prompt, and the key only in its header", async () => {
+    let seen: { headers: IncomingMessage["headers"]; body: Record<string, unknown> } | null = null;
+    const server = createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        seen = { headers: req.headers, body: JSON.parse(data) };
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const cfg = config({ ANTHROPIC_API_KEY: "sk-ant-test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` })!;
+      const response = await streamReply(cfg, [{ role: "user", content: "こんにちは" }], "user-id-1");
+      expect(await response.text()).toContain("message_stop");
+      expect(seen!.headers.authorization).toBe("Bearer sk-ant-test");
+      expect(seen!.headers["anthropic-beta"]).toBe("server-side-fallback-2026-07-01");
+      expect(seen!.body).toEqual({
+        model: "claude-opus-5-5",
+        max_tokens: 16000,
+        stream: true,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: "こんにちは" }],
+        output_config: { effort: "medium" },
+        metadata: { user_id: "user-id-1" },
+        cache_control: { type: "ephemeral" },
+        fallbacks: "default",
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("goes only to Anthropic, whatever ANTHROPIC_BASE_URL says outside the local tests", () => {
+    expect(config({ ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "https://evil.example" })!.baseURL).toBe("https://api.anthropic.com");
+    expect(config({ ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "http://127.0.0.1.evil.example" })!.baseURL).toBe("https://api.anthropic.com");
+    expect(config({ ANTHROPIC_API_KEY: "k" })!.baseURL).toBe("https://api.anthropic.com");
+    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MAX_TOKENS: "999999", CLAUDE_EFFORT: "turbo" })).toMatchObject({ maxTokens: 64000, effort: "medium" });
+    expect(config({})).toBeNull();
+  });
+});
+
+describe("the invite page", () => {
+  it("keeps the code out of the request and runs only its own script", async () => {
+    const page = await call("GET", "/join");
+    expect(page.status).toBe(200);
+    const csp = page.headers.get("Content-Security-Policy")!;
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toMatch(/script-src 'nonce-[^']+'/);
+    expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(await page.text()).toContain("location.hash");
+  });
+
+  it("is all there is outside /v1 and /admin", async () => {
+    expect((await call("GET", "/")).status).toBe(404);
+    expect((await call("GET", "/v1/messages")).status).toBe(404);
+  });
+});
