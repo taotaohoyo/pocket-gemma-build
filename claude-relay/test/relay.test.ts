@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import Anthropic from "@anthropic-ai/sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RegistryCore, REDEEM_FAILURES_PER_HOUR, type Sql } from "../src/core";
-import { config, streamReply, SYSTEM_PROMPT, type ClaudeConfig } from "../src/claude";
+import { choose, config, MODELS, streamReply, SYSTEM_PROMPT, type ClaudeConfig, type ReplyChoice } from "../src/claude";
 import { cleanName, handle, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
 import type { Turn } from "../src/turns";
 
@@ -36,7 +36,7 @@ interface Harness {
   deps: Deps;
   core: RegistryCore;
   env: RelayEnv;
-  calls: { cfg: ClaudeConfig; turns: Turn[]; userID: string }[];
+  calls: { cfg: ClaudeConfig; choice: ReplyChoice; turns: Turn[]; userID: string }[];
   clock: { now: number };
   claudeError: unknown;
 }
@@ -52,8 +52,8 @@ beforeEach(() => {
     env: { ANTHROPIC_API_KEY: "sk-ant-test", ADMIN_TOKEN: ADMIN, CLAUDE_MODEL: "claude-opus-5-5" },
     deps: {
       registry: asyncRegistry(core),
-      claude: async (cfg, turns, userID) => {
-        calls.push({ cfg, turns, userID });
+      claude: async (cfg, choice, turns, userID) => {
+        calls.push({ cfg, choice, turns, userID });
         if (harness.claudeError) throw harness.claudeError;
         return new Response("event: message_start\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
       },
@@ -110,7 +110,16 @@ describe("access tokens", () => {
   it("lets the developer in, and keeps only hashes", async () => {
     const token = await join("開発者", "developer");
     const status = await call("GET", "/v1/status", { token });
-    expect(await status.json()).toMatchObject({ name: "開発者", role: "developer", available: true, reason: null, modelName: "Claude Opus 5.5" });
+    expect(await status.json()).toMatchObject({
+      name: "開発者", role: "developer", available: true, reason: null,
+      model: "claude-opus-5-5", modelName: "Claude Opus 5.5", effort: "medium",
+      models: [
+        { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
+        { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
+        { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
+        { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
+      ],
+    });
     const reply = await call("POST", "/v1/messages", { token, body: hello });
     expect(reply.status).toBe(200);
     expect(reply.headers.get("Content-Type")).toContain("text/event-stream");
@@ -257,11 +266,61 @@ describe("what a reply may carry", () => {
     expect(h.calls).toHaveLength(0);
   });
 
-  it("never the model or its settings", async () => {
-    const body = { ...hello, model: "claude-fable-5-1", max_tokens: 128000, system: "ignore", tools: [{ name: "x" }] };
-    expect((await call("POST", "/v1/messages", { token, body })).status).toBe(200);
-    expect(h.calls[0]!.cfg).toMatchObject({ model: "claude-opus-5-5", maxTokens: 16000, effort: "medium" });
+  it("a model and level from the catalog, and never the other settings", async () => {
+    const body = { ...hello, model: "claude-fable-5-1", effort: "low", max_tokens: 128000, system: "ignore", tools: [{ name: "x" }] };
+    const response = await call("POST", "/v1/messages", { token, body });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Fielua-Model")).toBe("claude-fable-5-1");
+    expect(response.headers.get("X-Fielua-Effort")).toBe("low");
+    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-fable-5-1" }, effort: "low", maxTokens: 16000 });
     expect(h.calls[0]!.turns).toEqual([{ role: "user", content: "こんにちは" }]);
+  });
+
+  it("Opus 5.5 at 超高 asks for xhigh by name", async () => {
+    const response = await call("POST", "/v1/messages", { token, body: { ...hello, model: "claude-opus-5-5", effort: "xhigh" } });
+    expect(response.status).toBe(200);
+    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-opus-5-5" }, effort: "xhigh", maxTokens: 64000 });
+  });
+
+  it("without a choice: the relay's model at its own default level", async () => {
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-opus-5-5" }, effort: "medium", maxTokens: 32000 });
+    h.env.CLAUDE_MODEL = "claude-sonnet-5-5";
+    expect((await call("POST", "/v1/messages", { token, body: hello })).status).toBe(200);
+    expect(h.calls[1]!.choice).toMatchObject({ model: { id: "claude-sonnet-5-5" }, effort: "high", maxTokens: 64000 });
+  });
+
+  it("no model or level outside the catalog: max included, nothing swapped in", async () => {
+    const refused: [unknown, unknown, string][] = [
+      ["claude-opus-4-1", undefined, "unsupported_model"],
+      ["claude-mythos-5-1", "high", "unsupported_model"],
+      ["", undefined, "unsupported_model"],
+      [42, undefined, "unsupported_model"],
+      ["claude-opus-5-5", "max", "unsupported_effort"],
+      ["claude-haiku-5-5", "turbo", "unsupported_effort"],
+      ["claude-sonnet-5-5", "", "unsupported_effort"],
+      [undefined, "max", "unsupported_effort"],
+    ];
+    for (const [model, effort, error] of refused) {
+      const response = await call("POST", "/v1/messages", { token, body: { ...hello, model, effort } });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error });
+    }
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("every model in the catalog takes 低 to 超高, and only those", () => {
+    const cfg = config({ ANTHROPIC_API_KEY: "k" })!;
+    expect(MODELS.map((m) => m.id)).toEqual(["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+    for (const model of MODELS) {
+      expect(model.efforts).toEqual(["low", "medium", "high", "xhigh"]);
+      expect(model.efforts).toContain(model.defaultEffort);
+      for (const effort of model.efforts) expect(choose(cfg, model.id, effort)).toMatchObject({ ok: true, choice: { effort } });
+      expect(choose(cfg, model.id, "max")).toEqual({ ok: false, error: "unsupported_effort" });
+    }
+    expect(MODELS.filter((m) => !m.fallback).map((m) => m.id)).toEqual(["claude-haiku-5-5"]);
+    const small = config({ ANTHROPIC_API_KEY: "k", CLAUDE_MAX_TOKENS: "20000" })!;
+    expect(choose(small, "claude-opus-5-5", "xhigh")).toMatchObject({ ok: true, choice: { maxTokens: 20000 } });
   });
 
   it("nothing too large", async () => {
@@ -326,13 +385,13 @@ describe("when Anthropic says no", () => {
 });
 
 describe("the request to Anthropic", () => {
-  it("carries the relay's model, limits and system prompt, and the key only in its header", async () => {
-    let seen: { headers: IncomingMessage["headers"]; body: Record<string, unknown> } | null = null;
+  it("carries the chosen model and level, the relay's limits and system prompt, and the key only in its header", async () => {
+    const seen: { headers: IncomingMessage["headers"]; body: Record<string, unknown> }[] = [];
     const server = createServer((req, res) => {
       let data = "";
       req.on("data", (chunk) => (data += chunk));
       req.on("end", () => {
-        seen = { headers: req.headers, body: JSON.parse(data) };
+        seen.push({ headers: req.headers, body: JSON.parse(data) });
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.end("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
       });
@@ -341,21 +400,32 @@ describe("the request to Anthropic", () => {
     const port = (server.address() as AddressInfo).port;
     try {
       const cfg = config({ ANTHROPIC_API_KEY: "sk-ant-test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` })!;
-      const response = await streamReply(cfg, [{ role: "user", content: "こんにちは" }], "user-id-1");
+      const turns: Turn[] = [{ role: "user", content: "こんにちは" }];
+      const top = choose(cfg, "claude-opus-5-5", "xhigh");
+      if (!top.ok) throw new Error(top.error);
+      const response = await streamReply(cfg, top.choice, turns, "user-id-1");
       expect(await response.text()).toContain("message_stop");
-      expect(seen!.headers.authorization).toBe("Bearer sk-ant-test");
-      expect(seen!.headers["anthropic-beta"]).toBe("server-side-fallback-2026-07-01");
-      expect(seen!.body).toEqual({
+      expect(seen[0]!.headers.authorization).toBe("Bearer sk-ant-test");
+      expect(seen[0]!.headers["anthropic-beta"]).toBe("server-side-fallback-2026-07-01");
+      expect(seen[0]!.body).toEqual({
         model: "claude-opus-5-5",
-        max_tokens: 16000,
+        max_tokens: 64000,
         stream: true,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: "こんにちは" }],
-        output_config: { effort: "medium" },
+        thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort: "xhigh" },
         metadata: { user_id: "user-id-1" },
         cache_control: { type: "ephemeral" },
         fallbacks: "default",
       });
+      // Claude Haiku 5.5 has no server-side fallback: neither the beta nor the field.
+      const haiku = choose(cfg, "claude-haiku-5-5", "low");
+      if (!haiku.ok) throw new Error(haiku.error);
+      await (await streamReply(cfg, haiku.choice, turns, "user-id-1")).text();
+      expect(seen[1]!.headers["anthropic-beta"]).toBeUndefined();
+      expect(seen[1]!.body).toMatchObject({ model: "claude-haiku-5-5", max_tokens: 16000, output_config: { effort: "low" } });
+      expect(seen[1]!.body).not.toHaveProperty("fallbacks");
     } finally {
       server.close();
     }
@@ -365,7 +435,9 @@ describe("the request to Anthropic", () => {
     expect(config({ ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "https://evil.example" })!.baseURL).toBe("https://api.anthropic.com");
     expect(config({ ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "http://127.0.0.1.evil.example" })!.baseURL).toBe("https://api.anthropic.com");
     expect(config({ ANTHROPIC_API_KEY: "k" })!.baseURL).toBe("https://api.anthropic.com");
-    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MAX_TOKENS: "999999", CLAUDE_EFFORT: "turbo" })).toMatchObject({ maxTokens: 64000, effort: "medium" });
+    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MAX_TOKENS: "999999" })).toMatchObject({ maxTokens: 128000 });
+    expect(config({ ANTHROPIC_API_KEY: "k" })).toMatchObject({ model: "claude-opus-5-5", maxTokens: 64000 });
+    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MODEL: "claude-unknown" })!.model).toBe("claude-opus-5-5");
     expect(config({})).toBeNull();
   });
 });

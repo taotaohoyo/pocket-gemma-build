@@ -29,14 +29,14 @@ export function joinPage(): Response {
   <h1>Fielua で Claude を使う招待</h1>
   <p>Fielua から Claude（Anthropic の外部 AI）を使えるようにする招待です。</p>
   <a class="open" id="open" href="#">Fielua で開く</a>
-  <p class="note">開けないときは、Fielua の 設定 › Claude で次のコードを入力してください。</p>
-  <p><code id="code">（コードがありません）</code></p>
-  <p class="note">コードは一度だけ使えて、72 時間で無効になります。ほかの人に見せないでください。</p>
+  <p class="note" id="missing" hidden>このリンクには招待コードがありません。受け取ったリンクを、そのまま開き直してください。</p>
+  <p class="note">開けないときは、受け取った招待リンクをコピーして、Fielua の 設定 › Claude ›「招待リンクを入力」に貼り付けてください。</p>
+  <p class="note">招待は一度だけ使えて、72 時間で無効になります。ほかの人に見せないでください。</p>
 </main>
 <script nonce="${nonce}">
   const code = decodeURIComponent(location.hash.slice(1)).replace(/[^0-9A-Za-z-]/g, "").slice(0, 24);
+  if (!code) document.getElementById("missing").hidden = false;
   if (code) {
-    document.getElementById("code").textContent = code;
     document.getElementById("open").href = "fielua://claude?server=" + encodeURIComponent(location.origin) + "&code=" + encodeURIComponent(code);
   }
 </script>

@@ -1,6 +1,7 @@
-// What the app may send for a reply: the chat's text turns, nothing else.
-// The model, its limits, the system prompt and every other parameter are
-// the relay's own; anything else in the body is ignored.
+// What the app may send for a reply: the chat's text turns, and which of
+// the relay's models and reasoning levels should answer (claude.ts checks
+// those). Limits, the system prompt and every other parameter are the
+// relay's own; anything else in the body is ignored.
 
 export interface Turn {
   role: "user" | "assistant";

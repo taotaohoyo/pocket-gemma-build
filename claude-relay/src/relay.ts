@@ -4,7 +4,7 @@
 //
 //   GET  /v1/status            the user and whether Claude can answer now
 //   POST /v1/redeem            an invite code for an access token (once)
-//   POST /v1/messages          a reply to the chat's text turns, streamed
+//   POST /v1/messages          a reply to the chat's text turns, streamed, by the chosen model and level
 //   POST /v1/leave             the user's own registration deleted (its token stops at once)
 //   GET  /join                 the page an invite link opens (the code stays in the link's #)
 //   GET  /admin/state          users, open invites, switches       (admin key)
@@ -16,7 +16,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Invite, PauseReason, RedeemResult, Role, Settings, User, UserStatus } from "./core";
 import { MAX_NAME_LENGTH } from "./core";
-import { config, modelName, streamReply, type ClaudeConfig } from "./claude";
+import { choose, config, MODELS, modelInfo, modelName, streamReply, type ClaudeConfig, type ReplyChoice } from "./claude";
 import { joinPage } from "./join";
 import {
   adminKeyMatches, bearer, inviteHash, isAccessToken, newAccessToken, newID, newInviteCode, normalizeInviteCode, tokenHash,
@@ -45,13 +45,12 @@ export interface RelayEnv {
   ADMIN_TOKEN?: string;
   CLAUDE_MODEL?: string;
   CLAUDE_MAX_TOKENS?: string;
-  CLAUDE_EFFORT?: string;
   ANTHROPIC_BASE_URL?: string;
 }
 
 export interface Deps {
   registry: RegistryAPI;
-  claude?: (cfg: ClaudeConfig, turns: Turn[], userID: string, signal?: AbortSignal) => Promise<Response>;
+  claude?: (cfg: ClaudeConfig, choice: ReplyChoice, turns: Turn[], userID: string, signal?: AbortSignal) => Promise<Response>;
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
@@ -109,8 +108,11 @@ async function status(request: Request, env: RelayEnv, deps: Deps): Promise<Resp
     role: person.role,
     available: reason === null,
     reason,
+    // The default, and everything the app may choose instead.
     model,
     modelName: modelName(model),
+    effort: modelInfo(model)?.defaultEffort ?? null,
+    models: MODELS.map(({ id, name, efforts, defaultEffort }) => ({ id, name, efforts, defaultEffort })),
   });
 }
 
@@ -146,10 +148,13 @@ async function messages(request: Request, env: RelayEnv, deps: Deps): Promise<Re
   if (!body.ok) return json(body.error === "too_large" ? 413 : 400, { error: body.error });
   const parsed = parseTurns(body.value);
   if (!parsed.ok) return json(parsed.error === "too_large" ? 413 : 400, { error: parsed.error });
+  const { model, effort } = body.value as { model?: unknown; effort?: unknown };
+  const chosen = choose(cfg, model, effort);
+  if (!chosen.ok) return json(400, { error: chosen.error });
   const call = deps.claude ?? streamReply;
   let upstream: Response;
   try {
-    upstream = await call(cfg, parsed.turns, person.id, request.signal);
+    upstream = await call(cfg, chosen.choice, parsed.turns, person.id, request.signal);
   } catch (error) {
     return await claudeFailure(error, deps);
   }
@@ -160,7 +165,8 @@ async function messages(request: Request, env: RelayEnv, deps: Deps): Promise<Re
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-      "X-Fielua-Model": cfg.model,
+      "X-Fielua-Model": chosen.choice.model.id,
+      "X-Fielua-Effort": chosen.choice.effort,
     },
   });
 }

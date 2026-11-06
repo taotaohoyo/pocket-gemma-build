@@ -23,10 +23,13 @@ tag = "v1"
 new_sqlite_classes = ["Registry"]
 
 # Not secret. Changed here and deployed again.
+# CLAUDE_MODEL: the model a chat gets when the app names none (the app
+# chooses from the catalog in src/claude.ts). CLAUDE_MAX_TOKENS: the most
+# one reply may be at any reasoning level (低 16,000, 中 32,000, 高 and
+# 超高 64,000 tokens, never above this).
 [vars]
 CLAUDE_MODEL = "claude-opus-5-5"
-CLAUDE_MAX_TOKENS = "16000"
-CLAUDE_EFFORT = "medium"
+CLAUDE_MAX_TOKENS = "64000"
 
 # No request logs: conversations and keys never reach Cloudflare's logs.
 [observability]

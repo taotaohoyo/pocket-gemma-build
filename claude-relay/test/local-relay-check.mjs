@@ -75,7 +75,9 @@ const wrangler = spawn("npx", [
   "--var", "ANTHROPIC_API_KEY:sk-ant-local-check",
   "--var", `ADMIN_TOKEN:${ADMIN}`,
   "--var", `ANTHROPIC_BASE_URL:http://127.0.0.1:${anthropicPort}`,
-], { env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+], { env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+// npx, wrangler and workerd: the whole group goes when the check ends.
+const stopRelay = () => { try { process.kill(-wrangler.pid, "SIGTERM"); } catch {} };
 let log = "";
 wrangler.stdout.on("data", (d) => (log += d));
 wrangler.stderr.on("data", (d) => (log += d));
@@ -126,12 +128,28 @@ try {
   check("the app never sees the key", !text.includes("sk-ant-local-check"));
   console.log(`  (reply in ${Date.now() - started} ms)`);
 
+  // The model and level the person chose
+  check("the app learns the four models and their levels", JSON.stringify(status.models?.map((m) => [m.id, m.efforts.join("/")])) ===
+    JSON.stringify(["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"].map((id) => [id, "low/medium/high/xhigh"])));
+  await (await api("POST", "/v1/messages", { token, body: { ...ask("こんにちは"), model: "claude-opus-5-5", effort: "xhigh" } })).text();
+  const top = upstream.requests.at(-1).body;
+  check("Opus 5.5 at 超高 goes out as effort xhigh", top.model === "claude-opus-5-5" && top.output_config?.effort === "xhigh" && top.max_tokens === 64000, JSON.stringify(top.output_config));
+  await (await api("POST", "/v1/messages", { token, body: { ...ask("こんにちは"), model: "claude-haiku-5-5", effort: "low" } })).text();
+  const haiku = upstream.requests.at(-1);
+  check("Haiku 5.5 at 低 goes out as itself, without a fallback", haiku.body.model === "claude-haiku-5-5" && haiku.body.output_config?.effort === "low" && !("fallbacks" in haiku.body) && !haiku.headers["anthropic-beta"]);
+  const before1 = upstream.requests.length;
+  const maxed = await api("POST", "/v1/messages", { token, body: { ...ask("こんにちは"), model: "claude-opus-5-5", effort: "max" } });
+  const unknown = await api("POST", "/v1/messages", { token, body: { ...ask("こんにちは"), model: "claude-opus-4-1" } });
+  check("max and unknown models are refused, and not sent", maxed.status === 400 && (await maxed.json()).error === "unsupported_effort" &&
+    unknown.status === 400 && (await unknown.json()).error === "unsupported_model" && upstream.requests.length === before1);
+
   // Pieces arrive as they come, not all at the end
+  const finishedBefore = upstream.finished;
   const slow = await api("POST", "/v1/messages", { token, body: ask("slow") });
   const reader = slow.body.getReader();
   const first = await reader.read();
   const firstAt = Date.now();
-  check("the first piece arrives before the reply ends", !first.done && upstream.finished < 3);
+  check("the first piece arrives before the reply ends", !first.done && upstream.finished === finishedBefore);
 
   // Stopping: the app closes its connection, and Anthropic's request ends too
   const before = upstream.closedEarly;
@@ -186,7 +204,7 @@ try {
 } catch (error) {
   check("the check ran", false, String(error));
 } finally {
-  wrangler.kill("SIGTERM");
+  stopRelay();
   anthropic.close();
   await sleep(500);
   rmSync(state, { recursive: true, force: true });
