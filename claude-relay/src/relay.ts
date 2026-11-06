@@ -5,6 +5,7 @@
 //   GET  /v1/status            the user and whether Claude can answer now
 //   POST /v1/redeem            an invite code for an access token (once)
 //   POST /v1/messages          a reply to the chat's text turns, streamed
+//   POST /v1/leave             the user's own registration deleted (its token stops at once)
 //   GET  /join                 the page an invite link opens (the code stays in the link's #)
 //   GET  /admin/state          users, open invites, switches       (admin key)
 //   POST /admin/invites        a new invite                        (admin key)
@@ -66,6 +67,7 @@ export async function handle(request: Request, env: RelayEnv, deps: Deps): Promi
       if (request.method === "GET" && path === "/v1/status") return await status(request, env, deps);
       if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, deps);
       if (request.method === "POST" && path === "/v1/messages") return await messages(request, env, deps);
+      if (request.method === "POST" && path === "/v1/leave") return await leave(request, deps);
       return json(404, { error: "not_found" });
     }
     if (path.startsWith("/admin/")) return await admin(request, url, env, deps);
@@ -122,6 +124,16 @@ async function redeem(request: Request, deps: Deps): Promise<Response> {
   const result = await deps.registry.redeem(await inviteHash(code ?? "-"), newID(), await tokenHash(token));
   if (!result.ok) return json(result.error === "too_many_attempts" ? 429 : 400, { error: result.error });
   return json(200, { token, name: result.user.name, role: result.user.role });
+}
+
+/** The app's 登録を解除: the user's own record goes, revoked or not, so nothing of theirs stays. */
+async function leave(request: Request, deps: Deps): Promise<Response> {
+  const token = bearer(request);
+  if (!token || !isAccessToken(token)) return json(401, { error: "unauthorized" });
+  const found = await deps.registry.authenticate(await tokenHash(token));
+  if (!found) return json(401, { error: "unauthorized" });
+  await deps.registry.deleteUser(found.id);
+  return json(200, { left: true });
 }
 
 async function messages(request: Request, env: RelayEnv, deps: Deps): Promise<Response> {

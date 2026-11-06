@@ -196,6 +196,18 @@ describe("friends", () => {
     expect(h.calls).toHaveLength(1);
   });
 
+  it("can leave on their own, revoked or not, and nothing of theirs stays", async () => {
+    const token = await join("友人", "friend");
+    const id = h.core.listUsers()[0]!.id;
+    h.core.setStatus(id, "revoked");
+    expect((await call("POST", "/v1/leave", { token: "fcl_" + "x".repeat(43) })).status).toBe(401);
+    const left = await call("POST", "/v1/leave", { token });
+    expect(left.status).toBe(200);
+    expect(h.core.listUsers()).toHaveLength(0);
+    expect((await call("POST", "/v1/leave", { token })).status).toBe(401);
+    expect((await call("GET", "/v1/status", { token })).status).toBe(401);
+  });
+
   it("have no limits of their own", async () => {
     h.core.setFriendsEnabled(true);
     const token = await join("友人", "friend");
