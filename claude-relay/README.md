@@ -27,6 +27,8 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
    - プロジェクト名: `fielua-claude`
    - ルートディレクトリ: `claude-relay`
    - デプロイコマンド: `npx wrangler deploy`（最初から入っています）
+   - 詳細設定の「パス」は `/claude-relay`。プレビュービルドと Cloudflare Access はオフ、ビルド用の変数は空のまま
+   - 作る画面にブランチの欄はなく、最初は `main` から作るので一度失敗します。設定 › ビルド で本番のブランチを中継サーバーのあるブランチに変え、そのブランチに変更を送るとビルドされます
 2. できた Worker の 設定 › 変数とシークレット で、次の 2 つを「シークレット」として足します。
    - `ANTHROPIC_API_KEY`: Anthropic Console で作った API キー
    - `ADMIN_TOKEN`: Fielua の 設定 › Claude、または Web 版の「開発者の初期設定」で作る管理キー（32 文字以上）
