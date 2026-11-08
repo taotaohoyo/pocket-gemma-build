@@ -11,7 +11,8 @@
   --card-stroke: #EEE8DE;
   --input-border: #E2DACC;
   --ink: #1F1C18;
-  --secondary: #776D62;
+  /* A shade under the app's #776D62, for 4.5:1 on the bubbles and sheets. */
+  --secondary: #6F655A;
   --wordmark: #8E7D6A;
   --accent: #FACC3D;
   --on-accent: #2B2108;
@@ -32,7 +33,7 @@
   --table-header: rgba(107, 84, 51, 0.06);
   --md-line: #E2DACC;
   --chip: rgba(107, 84, 51, 0.07);
-  --caution: #B35900;
+  --caution: #A04F00;
   --veil: rgba(250, 247, 241, 0.82);
   --shadow: 0 2px 8px rgba(80, 55, 20, 0.05);
   --bar-shadow: 0 6px 24px rgba(80, 55, 20, 0.08), 0 1px 2px rgba(80, 55, 20, 0.06);
@@ -446,6 +447,12 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
   z-index: 50; margin: 0; padding: 10px 16px; border-radius: 999px; font-size: 14px;
   background: var(--ink); color: var(--paper); box-shadow: 0 6px 24px rgba(0,0,0,0.2);
   animation: rise-toast 0.2s ease-out;
+  display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 32px);
+}
+.toast[hidden] { display: none; }
+.toast-action {
+  flex: none; min-height: 32px; margin: -6px -8px -6px 0; padding: 0 12px; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 18%, transparent); color: var(--accent); font-size: 14px; font-weight: 600;
 }
 @keyframes rise-toast { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
@@ -629,3 +636,8 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 .download .icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .download.busy { opacity: 0.6; }
 @media (prefers-reduced-motion: reduce) { .work.busy .icon, .tool-pill { animation: none; } }
+
+/* Landscape on a phone: nothing under the Dynamic Island or the rounded corners. */
+:root { --safe-left: env(safe-area-inset-left, 0px); --safe-right: env(safe-area-inset-right, 0px); }
+.topbar { padding-left: calc(var(--safe-left) + 10px); padding-right: calc(var(--safe-right) + 10px); }
+.thread, .composer-area, .login { padding-left: max(var(--gutter), var(--safe-left)); padding-right: max(var(--gutter), var(--safe-right)); }

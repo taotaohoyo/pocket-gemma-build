@@ -114,6 +114,11 @@ DirectoryIndex index.html
   AddType font/woff2 .woff2
 </IfModule>
 
+# Text files go compressed where the server can (a first visit loads about a third as much).
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/javascript application/javascript application/manifest+json
+</IfModule>
+
 <IfModule mod_headers.c>
   Header always set Content-Security-Policy "${csp}; frame-ancestors 'none'"
   Header always set X-Content-Type-Options "nosniff"

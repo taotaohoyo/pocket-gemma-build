@@ -674,7 +674,14 @@ try {
     const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
     return (await (await fetch(`${relayURL}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).credit?.spentUSD ?? null;
   }, relay);
+  const shownBefore = await dev.locator(".msg").count();
   await dev.click("#new-chat");
+  await dev.waitForSelector("#toast:not([hidden]) .toast-action");
+  check("a new chat can be undone for a few seconds (there is no history)", (await dev.textContent("#toast")).includes("元に戻す") && (await dev.locator(".msg").count()) === 0);
+  await dev.click("#toast .toast-action");
+  check("元に戻す brings the conversation back", (await dev.locator(".msg").count()) === shownBefore && (await dev.evaluate(() => sessionStorage.getItem("fielua.chat"))) === chatBeforeTools);
+  await dev.click("#new-chat");
+  await dev.evaluate(() => { document.getElementById("toast").hidden = true; });
   await dev.click("#attach");
   await dev.waitForSelector("#attach-menu:not([hidden])");
   const toolRows = await dev.evaluate(() => [...document.querySelectorAll("#attach-menu [data-tool]")].map((row) => `${row.dataset.tool}:${row.hidden ? "hidden" : "shown"}:${row.getAttribute("aria-checked")}`));
@@ -762,6 +769,23 @@ try {
   check("after reloading, 情報源, the files and the switch are still there", afterReload.sources === 3 && afterReload.files === 4 && afterReload.pill === "ファイル", JSON.stringify(afterReload));
   await dev.click("#tool-pills .tool-pill");
   check("all off: the next question goes without tools", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
+
+  // MARK: A long conversation
+  {
+    const longContext = await browser.newContext({ ...iphone });
+    await longContext.addInitScript(([s, c]) => { sessionStorage.setItem("fielua.session", s); sessionStorage.setItem("fielua.chat", c); },
+      [await dev.evaluate(() => sessionStorage.getItem("fielua.session")),
+        JSON.stringify({ messages: Array.from({ length: 30 }, (_, i) => [{ role: "user", text: `質問 ${i}` }, { role: "assistant", text: `答え ${i}`, model: "claude-opus-5-5", effort: "medium", end: "done" }]).flat() })]);
+    const longPage = await longContext.newPage();
+    await longPage.goto(page0);
+    await longPage.waitForSelector("#chat:not([hidden])");
+    await sendMessage(longPage, "echo");
+    await waitReply(longPage);
+    const sentTurns = upstream.requests.at(-1).body.messages;
+    const longCaption = await longPage.locator(".msg.assistant").last().locator(".caption").textContent();
+    check("a long conversation says its first questions no longer go to Claude", sentTurns.length === 39 && longCaption.includes("最初の 11 問は Claude に送っていません"), `${sentTurns.length} turns, ${longCaption}`);
+    await longContext.close();
+  }
 
   // MARK: A friend
   await dev.click("#settings-button");

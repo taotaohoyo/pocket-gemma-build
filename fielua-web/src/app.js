@@ -79,8 +79,8 @@ function loadChat() {
 function saveChat() {
   const write = (pictures) => sessionStorage.setItem("fielua.chat", JSON.stringify({
     ...(state.chat.container ? { container: state.chat.container } : {}),
-    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files }) => ({
-      role, text, model, effort, served, end, error,
+    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files, trimmed }) => ({
+      role, text, model, effort, served, end, error, ...(trimmed ? { trimmed } : {}),
       ...(attachments?.length ? { attachments: attachments.map((a) => ({ ...stored(a), thumb: pictures ? a.thumb : undefined })) } : {}),
       ...(search?.queries.length || search?.pages.length ? { search: { queries: search.queries, pages: search.pages.slice(0, 12), failed: search.failed ?? null } } : {}),
       ...(files?.length ? { files: files.map(({ id, name, size, mimeType }) => ({ id, name, size, mimeType })) } : {}),
@@ -120,12 +120,16 @@ function h(tag, props = {}, ...children) {
 }
 
 let toastTimer = 0;
-function toast(text) {
+/** A short line above the composer; with `action` ({ label, run }), a button in it, for a few seconds more. */
+function toast(text, action = null) {
   const element = $("toast");
-  element.textContent = text;
+  element.replaceChildren(h("span", { text }));
+  if (action) {
+    element.append(h("button", { type: "button", class: "toast-action", text: action.label, onclick: () => { element.hidden = true; action.run(); } }));
+  }
   element.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { element.hidden = true; }, Math.max(2400, text.length * 90));
+  toastTimer = setTimeout(() => { element.hidden = true; }, action ? 6000 : Math.max(2400, text.length * 90));
 }
 
 function confirmDialog({ title, body = [], ok = "OK", danger = false, check = null }) {
@@ -397,7 +401,8 @@ function renderTopbar() {
   const { model, effort } = choice();
   $("model-name").textContent = model.name;
   $("model-sub").textContent = `推論 ${EFFORT[effort]?.title ?? effort} · 外部AI`;
-  $("model-button").setAttribute("aria-label", `${model.name}、推論レベル${EFFORT[effort]?.title ?? effort}、外部AI。モデルと推論レベルを変える`);
+  // The name read aloud starts with what the button shows (voice control says what it sees).
+  $("model-button").setAttribute("aria-label", `${model.name} 推論 ${EFFORT[effort]?.title ?? effort} · 外部AI、モデルと推論レベルを変える`);
   $("empty-line").textContent = "メッセージは Anthropic の Claude に送られます。";
 }
 
@@ -499,7 +504,9 @@ function pictureElement(attachment) {
   const box = pictureBox(attachment);
   const figure = h("button", {
     type: "button", class: `sent-picture${attachment.kind === "video" ? " video" : ""}`,
-    "aria-label": `${attachment.kind === "video" ? "動画" : "写真"}を開く: ${attachment.name}`,
+    "aria-label": attachment.kind === "video" && attachment.duration
+      ? `${timeLabel(attachment.duration)} 動画を開く: ${attachment.name}`
+      : `${attachment.kind === "video" ? "動画" : "写真"}を開く: ${attachment.name}`,
     onclick: () => openViewer(attachment),
   }, h("img", { src: attachment.thumb, alt: "", width: String(box.width), height: String(box.height), draggable: "false" }));
   figure.style.width = `${box.width}px`;
@@ -809,7 +816,7 @@ function fileKind(file) {
 /** The files a reply made, each with its download button; a picture shows itself too. */
 function filesElement(message) {
   return h("div", { class: "made-files" }, message.files.map((file) => {
-    const button = h("button", { type: "button", class: "secondary download", "aria-label": `${file.name ?? "ファイル"}をダウンロード` }, icon("down"), h("span", { text: "保存" }));
+    const button = h("button", { type: "button", class: "secondary download", "aria-label": `保存: ${file.name ?? "ファイル"}` }, icon("down"), h("span", { text: "保存" }));
     button.addEventListener("click", () => downloadFile(file, button));
     const card = h("div", { class: "made-file" },
       icon("doc"),
@@ -886,6 +893,8 @@ function captionFor(message) {
   const parts = [`${modelName(message.model)} · 推論 ${EFFORT[message.effort]?.title ?? message.effort}`];
   if (message.served && message.served !== message.model && !message.served.startsWith(message.model)) parts.push(`${modelName(message.served)} が答えました`);
   if (message.end === "stopped") parts.push("停止しました");
+  // A long conversation: its first questions no longer went to Claude (the relay takes 40 turns at most).
+  if (message.trimmed) parts.push(`最初の ${message.trimmed} 問は Claude に送っていません`);
   const caption = h("div", { class: "caption" }, h("span", { text: parts.join(" · ") }));
   if (message.text) {
     caption.append(h("button", {
@@ -960,7 +969,8 @@ function contextTurns(messages, maxChars = attachChars()) {
   }
   while (turns.length && turns[turns.length - 1].role !== "user") turns.pop();
   const total = () => turns.reduce((sum, turn) => sum + bytes(turn.content), 0);
-  while (turns.length > 1 && (turns.length > MAX_TURNS || total() > MAX_TOTAL_BYTES)) turns.splice(0, 2);
+  let dropped = 0;
+  while (turns.length > 1 && (turns.length > MAX_TURNS || total() > MAX_TOTAL_BYTES)) { turns.splice(0, 2); dropped++; }
   const used = { chars: 0, images: 0, documents: 0, textBytes: 0 };
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index];
@@ -983,6 +993,7 @@ function contextTurns(messages, maxChars = attachChars()) {
       turn.content = turn.content ? `${turn.content}\n\n${note}` : note;
     }
   }
+  turns.dropped = dropped;
   return turns;
 }
 
@@ -1050,7 +1061,7 @@ async function ask() {
   if (!turns.length) return;
   if (turns.some((turn) => bytes(turn.content) > MAX_TURN_BYTES)) { toast("メッセージが長すぎます。新しい会話でお試しください。"); return; }
   const tools = toolsFor();
-  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}) };
+  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}), ...(turns.dropped ? { trimmed: turns.dropped } : {}) };
   state.chat.messages.push(message);
   const element = messageElement(message);
   const entry = state.views.get(message);
@@ -1624,11 +1635,27 @@ function wireComposer() {
   $("new-chat").addEventListener("click", async () => {
     if (!state.chat.messages.length && !state.draft.length) return;
     stop();
-    forgetChat();
+    // The conversation stays a few seconds more, for 元に戻す (there is no history to find it in).
+    const previous = state.chat;
+    sessionStorage.removeItem("fielua.chat");
+    state.chat = { messages: [] };
     clearDraft();
     renderThread();
     updateComposer();
     if (!coarse) input.focus();
+    if (!previous.messages.length) return;
+    const letGo = setTimeout(() => previous.messages.forEach((message) => message.attachments?.forEach(release)), 7000);
+    toast("新しい会話にしました。", {
+      label: "元に戻す",
+      run: () => {
+        clearTimeout(letGo);
+        if (state.streaming || state.chat.messages.length || !session.get()) { previous.messages.forEach((message) => message.attachments?.forEach(release)); return; }
+        state.chat = previous;
+        saveChat();
+        renderThread();
+        updateComposer();
+      },
+    });
   });
 }
 
