@@ -1,0 +1,19 @@
+{
+  "name": "fielua-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fielua for the web: the chat at https://suelira.com/chat/, talking to Claude through Fielua's relay (claude-relay/).",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node test/markdown-check.mjs && node test/e2e.mjs"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "katex": "0.19.1",
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

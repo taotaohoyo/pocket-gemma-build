@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="__CSP__">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FAF7F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171512" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fielua">
+<meta name="format-detection" content="telephone=no">
+<title>Fielua</title>
+<link rel="icon" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="__CSS__">
+<script type="module" src="__JS__"></script>
+</head>
+<body>
+<noscript><p class="noscript">Fielua を使うには JavaScript をオンにしてください。</p></noscript>
+
+<!-- Sign in: a passkey, or an invite, or the developer's first setup -->
+<main id="login" class="login" hidden>
+  <div class="login-inner">
+    <img class="login-flower" src="assets/flower.png" alt="" width="132" height="129">
+    <h1 class="wordmark">Fielua</h1>
+    <section id="login-main" class="login-panel">
+      <button type="button" id="login-passkey" class="primary">パスキーでログイン</button>
+      <p class="login-note">Face ID や Touch ID など、この端末のパスキーで入ります。</p>
+      <div class="login-links">
+        <button type="button" class="text" id="show-invite">招待コードで登録</button>
+        <button type="button" class="text" id="show-setup">開発者の初期設定</button>
+      </div>
+    </section>
+    <section id="login-invite" class="login-panel" hidden>
+      <h2>招待コードで登録</h2>
+      <p class="login-note">開発者から届いたコードを入れて、この端末にパスキーを作ります。コードは一度だけ使えます。</p>
+      <label class="field"><span>招待コード</span>
+        <input id="invite-code" type="text" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="40">
+      </label>
+      <button type="button" id="invite-register" class="primary">パスキーを作って登録</button>
+      <button type="button" class="text back">戻る</button>
+    </section>
+    <section id="login-setup" class="login-panel" hidden>
+      <h2>開発者の初期設定</h2>
+      <p class="login-note">iPhone の Fielua がなくても、ここで開発者として登録できます。</p>
+      <details class="make-key">
+        <summary>管理キーをまだ作っていないとき</summary>
+        <p class="login-note">下のボタンで作ったキーを、Cloudflare の Worker の「設定 › 変数とシークレット」に、シークレット <code>ADMIN_TOKEN</code> として貼り付けて保存してください。キーはこの画面にだけ出て、どこにも送りません。</p>
+        <button type="button" id="make-admin-key" class="secondary">管理キーを作ってコピー</button>
+        <output id="made-admin-key" class="made-key" hidden></output>
+      </details>
+      <label class="field"><span>管理キー（ADMIN_TOKEN）</span>
+        <input id="setup-admin-key" type="password" autocomplete="off" spellcheck="false" placeholder="32 文字以上">
+      </label>
+      <label class="field"><span>名前</span>
+        <input id="setup-name" type="text" autocomplete="off" maxlength="40" placeholder="例：はっちー">
+      </label>
+      <button type="button" id="setup-register" class="primary">パスキーを作って開発者として登録</button>
+      <p class="login-note">管理キーは登録に一度使うだけで、この端末には残しません。</p>
+      <button type="button" class="text back">戻る</button>
+    </section>
+    <p id="login-error" class="error-text" role="alert" hidden></p>
+    <p class="login-foot">Fielua の Web 版は、Anthropic の外部 AI「Claude」と話すための、招待した人だけのチャットです。</p>
+  </div>
+</main>
+
+<!-- The chat -->
+<div id="chat" class="chat" hidden>
+  <header class="topbar">
+    <button type="button" id="new-chat" class="icon-button" aria-label="新しい会話">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4.5L19.3 9.2a2.1 2.1 0 0 0 0-3L17.8 4.7a2.1 2.1 0 0 0-3 0L4 15.5V20Z"/><path d="M13.5 6 18 10.5"/></svg>
+    </button>
+    <button type="button" id="model-button" class="model-button" aria-haspopup="dialog" aria-label="モデルと推論レベル">
+      <span class="model-line"><svg class="cloud" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.2a4 4 0 0 0 .5-8A5.5 5.5 0 0 0 7.1 9a4.75 4.75 0 0 0-.1 9.5Z"/></svg><span id="model-name">Claude</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></span>
+      <span id="model-sub" class="model-sub"></span>
+    </button>
+    <button type="button" id="settings-button" class="icon-button" aria-haspopup="dialog" aria-label="設定">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1.2-3.2 3.8-5 7-5s5.8 1.8 7 5"/></svg>
+    </button>
+  </header>
+
+  <main id="scroller" class="scroller" tabindex="-1">
+    <div id="thread" class="thread" aria-live="off">
+      <div id="empty" class="empty">
+        <img class="empty-flower" src="assets/flower.png" alt="" width="60" height="59">
+        <p id="empty-line" class="empty-line"></p>
+      </div>
+      <div id="messages" class="messages"></div>
+    </div>
+  </main>
+
+  <footer class="composer-area">
+    <button type="button" id="jump" class="jump" aria-label="いちばん下へ" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/></svg>
+    </button>
+    <p id="banner" class="banner" role="status" hidden></p>
+    <form id="composer" class="composer" autocomplete="off">
+      <button type="button" id="credit" class="credit" aria-haspopup="dialog" hidden>
+        <svg viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="15"/><circle id="credit-arc" class="arc" cx="18" cy="18" r="15"/></svg>
+        <span id="credit-text" class="credit-text"></span>
+      </button>
+      <textarea id="input" rows="1" placeholder="メッセージ" aria-label="メッセージ" enterkeyhint="send"></textarea>
+      <button type="submit" id="send" class="send" aria-label="送信" disabled>
+        <svg class="up" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/></svg>
+        <svg class="stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/></svg>
+      </button>
+    </form>
+    <p class="disclosure">Anthropic の AI（Claude）が答えます。誤りを含むことがあります。</p>
+  </footer>
+</div>
+
+<!-- Model and reasoning level -->
+<dialog id="model-sheet" class="sheet" aria-labelledby="model-sheet-title">
+  <div class="sheet-head">
+    <h2 id="model-sheet-title">モデル</h2>
+    <button type="button" class="text close" data-close>完了</button>
+  </div>
+  <div class="sheet-body">
+    <p class="section-label">外部AI · インターネット経由</p>
+    <div id="model-list" class="choice-list" role="radiogroup" aria-label="モデル"></div>
+    <p class="section-label">推論レベル</p>
+    <div id="effort-list" class="choice-list" role="radiogroup" aria-label="推論レベル"></div>
+    <p class="section-foot">上げるほどよく考えて答えます。返信が始まるまでの時間と料金も増えます。次の送信から使い、このモデルの次の会話にも使います。使えないモデルとレベルは選べません。</p>
+  </div>
+</dialog>
+
+<!-- Settings: account, what is sent, and the developer's tools -->
+<dialog id="settings-sheet" class="sheet" aria-labelledby="settings-title">
+  <div class="sheet-head">
+    <h2 id="settings-title">設定</h2>
+    <button type="button" class="text close" data-close>完了</button>
+  </div>
+  <div class="sheet-body" id="settings-body"></div>
+</dialog>
+
+<!-- The credit left -->
+<dialog id="credit-sheet" class="sheet small" aria-labelledby="credit-title">
+  <div class="sheet-head">
+    <h2 id="credit-title">クレジットの残り</h2>
+    <button type="button" class="text close" data-close>完了</button>
+  </div>
+  <div class="sheet-body" id="credit-body"></div>
+</dialog>
+
+<!-- Confirmations -->
+<dialog id="confirm" class="alert" aria-labelledby="confirm-title">
+  <h2 id="confirm-title"></h2>
+  <div id="confirm-body"></div>
+  <div class="alert-buttons">
+    <button type="button" class="secondary" id="confirm-cancel">キャンセル</button>
+    <button type="button" class="primary" id="confirm-ok">OK</button>
+  </div>
+</dialog>
+
+<p id="toast" class="toast" role="status" hidden></p>
+</body>
+</html>

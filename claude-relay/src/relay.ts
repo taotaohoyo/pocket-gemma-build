@@ -207,6 +207,8 @@ export function creditView(credit: Credit, settings: Settings, person: User | nu
     remainingUSD: remaining / 1e6,
     percent: credit.budgetMicros > 0 ? Math.round((remaining / credit.budgetMicros) * 1000) / 10 : 0,
     setAt: credit.setAt,
+    /** Whether friends see it too (the developer's switch). */
+    friends: credit.friends,
   };
 }
 

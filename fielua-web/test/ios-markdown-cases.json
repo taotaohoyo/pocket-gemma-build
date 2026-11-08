@@ -1,0 +1,314 @@
+[
+ {
+  "fn": "repairStreaming",
+  "input": "式は $\\frac{a}{",
+  "expected": "式は",
+  "from": "MarkdownTests.swift:177"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "式は \\(x^",
+  "expected": "式は",
+  "from": "MarkdownTests.swift:178"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "式は $$x^2",
+  "expected": "式は",
+  "from": "MarkdownTests.swift:179"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "$a_1$ と $b_",
+  "expected": "$a_1$ と",
+  "from": "MarkdownTests.swift:180"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "`$x$` と $y_",
+  "expected": "`$x$` と",
+  "from": "MarkdownTests.swift:181"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "- $x^",
+  "expected": "",
+  "from": "MarkdownTests.swift:182"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "式は $",
+  "expected": "式は",
+  "from": "MarkdownTests.swift:183"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "価格は $5 と $10",
+  "expected": "価格は $5 と $10",
+  "from": "MarkdownTests.swift:185"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "価格は$5と$10です",
+  "expected": "価格は$5と$10です",
+  "from": "MarkdownTests.swift:186"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "\\[\nx^2",
+  "expected": "\\[\nx^2\n\\]",
+  "from": "MarkdownTests.swift:214"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "**LaTeX形式:**\n\\begin{ali",
+  "expected": "**LaTeX形式:**\n",
+  "from": "MarkdownTests.swift:300"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "連立方程式は \\begin{ca",
+  "expected": "連立方程式は",
+  "from": "MarkdownTests.swift:301"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "連立方程式は \\begin{cases} x+y=5 \\\\ x",
+  "expected": "連立方程式は",
+  "from": "MarkdownTests.swift:302"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "C:\\Users\\bob",
+  "expected": "C:\\Users\\bob",
+  "from": "MarkdownTests.swift:306"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "`\\begin{cases}` と",
+  "expected": "`\\begin{cases}` と",
+  "from": "MarkdownTests.swift:307"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "```python\nprint(1)",
+  "expected": "```python\nprint(1)\n```",
+  "from": "MarkdownTests.swift:373"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "テキスト **",
+  "expected": "テキスト",
+  "from": "MarkdownTests.swift:374"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "これは**重要",
+  "expected": "これは**重要**",
+  "from": "MarkdownTests.swift:375"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "`let x",
+  "expected": "`let x`",
+  "from": "MarkdownTests.swift:376"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "詳しくは[公式サイト](https://exa",
+  "expected": "詳しくは公式サイト",
+  "from": "MarkdownTests.swift:377"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "写真\n![猫](https://ex",
+  "expected": "写真\n",
+  "from": "MarkdownTests.swift:378"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "| a | b |\n|---|---|\n| 1 | 2 |\n| 3",
+  "expected": "| a | b |\n|---|---|\n| 1 | 2 |\n| 3",
+  "from": "MarkdownTests.swift:380"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "| a | b |\n|---|---|\n| 1 | 2 |\n| ",
+  "expected": "| a | b |\n|---|---|\n| 1 | 2 |",
+  "from": "MarkdownTests.swift:381"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "| a | b |\n|---|---|\n| 1 | 2 |\n| **",
+  "expected": "| a | b |\n|---|---|\n| 1 | 2 |",
+  "from": "MarkdownTests.swift:382"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "| a | b |\n|---|---|\n| 1 | **太",
+  "expected": "| a | b |\n|---|---|\n| 1 | **太**",
+  "from": "MarkdownTests.swift:383"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "説明\n| a | b |\n| --",
+  "expected": "説明",
+  "from": "MarkdownTests.swift:384"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "説明\n| a | b |\n|---|",
+  "expected": "説明",
+  "from": "MarkdownTests.swift:386"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "説明\n| a | b |\n|---|---",
+  "expected": "説明",
+  "from": "MarkdownTests.swift:387"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "説明\n| a | b |\n|---|---|",
+  "expected": "説明\n| a | b |\n|---|---|",
+  "from": "MarkdownTests.swift:388"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "段落\n-",
+  "expected": "段落",
+  "from": "MarkdownTests.swift:389"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "段落\n2",
+  "expected": "段落",
+  "from": "MarkdownTests.swift:390"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "$$\n\\frac{1}{2}",
+  "expected": "$$\n\\frac{1}{2}\n$$",
+  "from": "MarkdownTests.swift:391"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "> ```\n> code",
+  "expected": "> ```\n> code\n> ```",
+  "from": "MarkdownTests.swift:392"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "段落\n- **",
+  "expected": "段落",
+  "from": "MarkdownTests.swift:398"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "段落\n1. **",
+  "expected": "段落",
+  "from": "MarkdownTests.swift:399"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "引用\n> -",
+  "expected": "引用",
+  "from": "MarkdownTests.swift:400"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "> #",
+  "expected": "",
+  "from": "MarkdownTests.swift:401"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "段落\n100.",
+  "expected": "段落",
+  "from": "MarkdownTests.swift:402"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "2024",
+  "expected": "2024",
+  "from": "MarkdownTests.swift:403"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "***重要",
+  "expected": "***重要***",
+  "from": "MarkdownTests.swift:404"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "__重要",
+  "expected": "__重要__",
+  "from": "MarkdownTests.swift:405"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "詳しくは[公式サ",
+  "expected": "詳しくは公式サ",
+  "from": "MarkdownTests.swift:406"
+ },
+ {
+  "fn": "repairStreaming",
+  "input": "写真\n![猫の",
+  "expected": "写真\n",
+  "from": "MarkdownTests.swift:407"
+ },
+ {
+  "fn": "chunks",
+  "input": "段落1\n\n段落2",
+  "expected": [
+   "段落1",
+   "段落2"
+  ],
+  "from": "MarkdownTests.swift:584"
+ },
+ {
+  "fn": "chunks",
+  "input": "```\na\n\nb\n```\n\n後",
+  "expected": [
+   "```\na\n\nb\n```",
+   "後"
+  ],
+  "from": "MarkdownTests.swift:585"
+ },
+ {
+  "fn": "chunks",
+  "input": "- a\n\n- b\n\n次",
+  "expected": [
+   "- a\n\n- b",
+   "次"
+  ],
+  "from": "MarkdownTests.swift:586"
+ },
+ {
+  "fn": "chunks",
+  "input": "1. a\n\n    続き\n\n次",
+  "expected": [
+   "1. a\n\n    続き",
+   "次"
+  ],
+  "from": "MarkdownTests.swift:587"
+ },
+ {
+  "fn": "chunks",
+  "input": "$$\nx\n\ny\n$$\n\n後",
+  "expected": [
+   "$$\nx\n\ny\n$$",
+   "後"
+  ],
+  "from": "MarkdownTests.swift:588"
+ },
+ {
+  "fn": "chunks",
+  "input": "a\r\n\r\nb\n\n\n",
+  "expected": [
+   "a",
+   "b"
+  ],
+  "from": "MarkdownTests.swift:589"
+ }
+]

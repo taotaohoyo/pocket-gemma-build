@@ -199,7 +199,7 @@ export function config(env: {
 
 /** What Claude is told about where it answers. No personal data, the same for everyone, so it caches. */
 export const SYSTEM_PROMPT = [
-  "You are Claude, made by Anthropic, answering through Fielua, a personal chat app on iPhone.",
+  "You are Claude, made by Anthropic, answering through Fielua, a personal chat app on iPhone and on the web.",
   "Reply in the language the person writes in.",
   "Fielua shows Markdown: headings, lists, tables, code blocks, and LaTeX math between $ signs.",
   "Keep answers focused, and go into detail when the person asks for it.",
