@@ -29,8 +29,17 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
    - デプロイコマンド: `npx wrangler deploy`（最初から入っています）
 2. できた Worker の 設定 › 変数とシークレット で、次の 2 つを「シークレット」として足します。
    - `ANTHROPIC_API_KEY`: Anthropic Console で作った API キー
-   - `ADMIN_TOKEN`: Fielua の 設定 › Claude で作る管理キー（32 文字以上）
+   - `ADMIN_TOKEN`: Fielua の 設定 › Claude、または Web 版の「開発者の初期設定」で作る管理キー（32 文字以上）
 3. Fielua の 設定 › Claude に、Worker のアドレス（`https://fielua-claude.<あなたのサブドメイン>.workers.dev`）と管理キーを入れて、この iPhone を登録します。
+
+## Web 版（https://suelira.com/chat/）
+
+同じ中継サーバーが、Fielua の Web 版（`../fielua-web/`）も受け付けます。
+
+- ブラウザから呼べるのは `wrangler.toml` の `WEB_ORIGINS`（`https://suelira.com`、`https://www.suelira.com`）のページだけです（CORS）。空にすると Web 版は止まります。
+- Web 版のログインはパスキーです（`/web/passkey/…`、RP ID は `WEB_RP_ID` の `suelira.com`、ユーザー確認つき）。中継サーバーが署名を確かめ、12 時間のセッション（`fws_`、ハッシュだけを保存）を渡します。開発者の操作は、ログインから 15 分を過ぎるともう一度パスキーを求めます。
+- iPhone がなくても、Web の「開発者の初期設定」で管理キー（`ADMIN_TOKEN`）を一度入れて、開発者として登録できます。
+- 残りのクレジットは推定です。開発者が Console の残高を入れ、その後の返事の使用量に公開料金をかけて引きます（Anthropic に残高を読む API はありません）。
 
 ## 確かめ方
 
