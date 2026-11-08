@@ -52,6 +52,8 @@ beforeEach(() => {
     env: { ANTHROPIC_API_KEY: "sk-ant-test", ADMIN_TOKEN: ADMIN, CLAUDE_MODEL: "claude-opus-5-5" },
     deps: {
       registry: asyncRegistry(core),
+      models: async () => null,
+      now: () => clock.now,
       claude: async (cfg, choice, turns, userID) => {
         calls.push({ cfg, choice, turns, userID });
         if (harness.claudeError) throw harness.claudeError;

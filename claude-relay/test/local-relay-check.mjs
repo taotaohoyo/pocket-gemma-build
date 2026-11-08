@@ -24,7 +24,17 @@ function check(name, ok, detail = "") {
 // MARK: The stand-in for Anthropic
 
 const upstream = { requests: [], closedEarly: 0, finished: 0 };
+// Anthropic's Models API, as the relay asks it which models and levels it offers now.
+const MODEL_IDS = ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"];
+function modelsList(res) {
+  const effort = { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } };
+  const data = MODEL_IDS.map((id) => ({ type: "model", id, display_name: id, created_at: "2026-10-01T00:00:00Z", max_input_tokens: 1000000, max_tokens: 128000, capabilities: { effort } }));
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ data, has_more: false, first_id: data[0].id, last_id: data.at(-1).id }));
+}
+
 const anthropic = createServer((req, res) => {
+  if (req.method === "GET" && req.url.startsWith("/v1/models")) return modelsList(res);
   let data = "";
   req.on("data", (chunk) => (data += chunk));
   req.on("end", () => {
@@ -38,7 +48,7 @@ const anthropic = createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const send = (event, payload) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
-    send("message_start", { type: "message_start", message: { id: "msg_local", model: body.model, content: [] } });
+    send("message_start", { type: "message_start", message: { id: "msg_local", model: body.model, content: [], usage: { input_tokens: 1000, output_tokens: 1 } } });
     send("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
     const pieces = question === "slow" ? 100 : 5;
     let sent = 0;
@@ -143,7 +153,25 @@ try {
   check("max and unknown models are refused, and not sent", maxed.status === 400 && (await maxed.json()).error === "unsupported_effort" &&
     unknown.status === 400 && (await unknown.json()).error === "unsupported_model" && upstream.requests.length === before1);
 
-  // Pieces arrive as they come, not all at the end
+  check("Anthropic's Models API says the four models are offered", status.models?.every((m) => m.available === true), JSON.stringify(status.models?.map((m) => m.available)));
+
+  // The web app's origin, and no other
+  const pre = await fetch(`${relay}/v1/messages`, { method: "OPTIONS", headers: { Origin: "https://suelira.com", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type" } });
+  const evil = await fetch(`${relay}/v1/messages`, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" } });
+  check("a browser may call from suelira.com only", pre.status === 204 && pre.headers.get("access-control-allow-origin") === "https://suelira.com" &&
+    evil.status === 403 && !evil.headers.get("access-control-allow-origin"));
+  check("the web's sign-in refuses other origins", (await fetch(`${relay}/web/passkey/login/options`, { method: "POST", headers: { Origin: "https://evil.example" } })).status === 403);
+
+  // The estimate of the credit left: each reply's usage, against the balance entered
+  const credit = await (await api("POST", "/admin/settings", { token: ADMIN, body: { creditUSD: 10 } })).json();
+  check("the developer enters the balance", credit.credit?.percent === 100 && credit.credit?.budgetUSD === 10);
+  await (await api("POST", "/v1/messages", { token, body: ask("こんにちは") })).text();
+  await sleep(300);
+  const spent = (await (await api("GET", "/v1/status", { token })).json()).credit;
+  // 1,000 input at $4 and 5 output at $20 per million: $0.0041
+  check("a reply's usage is counted at Opus 5.5's prices", Math.abs(spent?.spentUSD - 0.0041) < 1e-9 && Math.abs(spent?.remainingUSD - 9.9959) < 1e-9, JSON.stringify(spent));
+
+  // Pieces arrive as they come, not all at the end (the credit meter in the way)
   const finishedBefore = upstream.finished;
   const slow = await api("POST", "/v1/messages", { token, body: ask("slow") });
   const reader = slow.body.getReader();
@@ -175,6 +203,9 @@ try {
     closed = upstream.closedEarly > beforeAbort;
   }
   check("an aborted request is stopped at Anthropic too", closed);
+  await sleep(300);
+  const afterStops = (await (await api("GET", "/v1/status", { token })).json()).credit;
+  check("stopped replies are counted too", afterStops?.spentUSD > spent?.spentUSD, JSON.stringify(afterStops));
 
   // Friends
   const friendInvite = await (await api("POST", "/admin/invites", { token: ADMIN, body: { name: "友人", role: "friend" } })).json();

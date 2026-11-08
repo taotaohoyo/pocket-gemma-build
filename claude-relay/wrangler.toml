@@ -30,6 +30,11 @@ new_sqlite_classes = ["Registry"]
 [vars]
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_MAX_TOKENS = "64000"
+# Fielua for the web (https://suelira.com/chat/): the only pages that may
+# call the relay from a browser (CORS), and the domain its passkeys belong
+# to. Web sessions work only from these origins. Empty turns the web off.
+WEB_ORIGINS = "https://suelira.com,https://www.suelira.com"
+WEB_RP_ID = "suelira.com"
 
 # No request logs: conversations and keys never reach Cloudflare's logs.
 [observability]
