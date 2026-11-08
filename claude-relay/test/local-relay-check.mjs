@@ -153,6 +153,38 @@ try {
   check("max and unknown models are refused, and not sent", maxed.status === 400 && (await maxed.json()).error === "unsupported_effort" &&
     unknown.status === 400 && (await unknown.json()).error === "unsupported_model" && upstream.requests.length === before1);
 
+  // Photos and PDFs: checked, then passed on byte for byte in the body the relay writes
+  const fileOf = (head, size) => {
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i++) bytes[i] = (i * 7919 + 13) & 0xff;
+    bytes.set(head);
+    return Buffer.from(bytes).toString("base64");
+  };
+  const photo = fileOf([0xff, 0xd8, 0xff, 0xe0], 1_500_000);
+  const pdf = fileOf([0x25, 0x50, 0x44, 0x46, 0x2d], 600_000);
+  const attachedAsk = (attachments, content = "これは何？") => ({ messages: [{ role: "user", content, attachments }] });
+  const photoStarted = Date.now();
+  const withFiles = await api("POST", "/v1/messages", { token, body: attachedAsk([
+    { type: "image", mediaType: "image/jpeg", data: photo, caption: "動画「海.mov」 0:12" },
+    { type: "pdf", name: "教材.pdf", data: pdf },
+    { type: "text", name: "メモ.txt", text: "三行のメモ" },
+  ]) });
+  const withFilesText = await withFiles.text();
+  const filed = upstream.requests.at(-1);
+  const blocks = filed.body.messages[0].content;
+  check("a photo, a PDF and a text file reach Anthropic as they were sent", withFiles.status === 200 && withFilesText.includes("message_stop") &&
+    blocks.length === 5 && blocks[0].text === "動画「海.mov」 0:12" && blocks[1].source.data === photo && blocks[1].source.media_type === "image/jpeg" &&
+    blocks[2].source.data === pdf && blocks[2].title === "教材.pdf" && blocks[3].source.data === "三行のメモ" && blocks[4].text === "これは何？",
+    `${Date.now() - photoStarted} ms, ${blocks.map((b) => b.type).join(",")}`);
+  check("with the relay's own parameters around them", filed.body.model === "claude-opus-5-5" && filed.body.fallbacks === "default" &&
+    filed.headers["anthropic-beta"]?.includes("server-side-fallback") && filed.body.system.includes("still frames") && filed.headers.authorization === "Bearer sk-ant-local-check");
+  const before4 = upstream.requests.length;
+  const tooBig = await api("POST", "/v1/messages", { token, body: attachedAsk([{ type: "pdf", name: "大きい.pdf", data: fileOf([0x25, 0x50, 0x44, 0x46, 0x2d], 2_600_000) }]) });
+  const notPhoto = await api("POST", "/v1/messages", { token, body: attachedAsk([{ type: "image", mediaType: "image/png", data: photo }]) });
+  check("too much, or a photo that is not what it says, is refused and not sent", tooBig.status === 413 && (await tooBig.json()).error === "too_large" &&
+    notPhoto.status === 400 && (await notPhoto.json()).error === "bad_attachment" && upstream.requests.length === before4);
+  check("the app learns how much it may attach", status.attachments?.bytes === 3 * 1024 * 1024 * 0.75, JSON.stringify(status.attachments));
+
   check("Anthropic's Models API says the four models are offered", status.models?.every((m) => m.available === true), JSON.stringify(status.models?.map((m) => m.available)));
 
   // The web app's origin, and no other

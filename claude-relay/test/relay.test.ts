@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import Anthropic from "@anthropic-ai/sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RegistryCore, REDEEM_FAILURES_PER_HOUR, type Sql } from "../src/core";
-import { choose, config, MODELS, streamReply, SYSTEM_PROMPT, type ClaudeConfig, type ReplyChoice } from "../src/claude";
+import { attachedBody, choose, config, MODELS, streamReply, SYSTEM_PROMPT, type ClaudeConfig, type ReplyChoice } from "../src/claude";
 import { cleanName, handle, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
 import type { Turn } from "../src/turns";
 
@@ -330,8 +330,94 @@ describe("what a reply may carry", () => {
     expect((await call("POST", "/v1/messages", { token, body: many })).status).toBe(413);
     const long = { messages: [{ role: "user", content: "あ".repeat(30_000) }] };
     expect((await call("POST", "/v1/messages", { token, body: long })).status).toBe(413);
-    expect((await call("POST", "/v1/messages", { token, raw: "x".repeat(300 * 1024) })).status).toBe(413);
+    expect((await call("POST", "/v1/messages", { token, raw: "x".repeat(5 * 1024 * 1024) })).status).toBe(413);
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+
+// Small real files, as base64: a 1×1 JPEG and PNG, a one-page PDF's first bytes.
+const JPEG = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9));
+const PNG = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1));
+const PDF = btoa("%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n");
+
+describe("what a person may attach", () => {
+  let token: string;
+  beforeEach(async () => { token = await join("開発者", "developer"); });
+  const send = (attachments: unknown[], content = "これは何？", role = "user") =>
+    call("POST", "/v1/messages", { token, body: { messages: [{ role, content, attachments }] } });
+
+  it("photos, PDFs and text files become Anthropic's blocks, made by the relay, before the text", async () => {
+    const response = await send([
+      { type: "image", mediaType: "image/jpeg", data: JPEG, caption: "動画「旅.mov」 0:03\n(音声なし)" },
+      { type: "image", mediaType: "image/png", data: PNG },
+      { type: "pdf", name: "資料.pdf", data: PDF },
+      { type: "text", name: "メモ.txt", text: "牛乳を買う" },
+    ]);
+    expect(response.status).toBe(200);
+    expect(h.calls[0]!.turns[0]!.content).toEqual([
+      { type: "text", text: "動画「旅.mov」 0:03 (音声なし)" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: JPEG } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: PDF }, title: "資料.pdf" },
+      { type: "document", source: { type: "text", media_type: "text/plain", data: "牛乳を買う" }, title: "メモ.txt" },
+      { type: "text", text: "これは何？" },
+    ]);
+  });
+
+  it("a photo alone, with nothing typed", async () => {
+    expect((await send([{ type: "image", mediaType: "image/jpeg", data: JPEG }], "")).status).toBe(200);
+    expect(h.calls[0]!.turns[0]!.content).toEqual([{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: JPEG } }]);
+  });
+
+  it("nothing that isn't what it says, nothing from elsewhere, only on the person's turns", async () => {
+    const bad = [
+      [{ type: "image", mediaType: "image/jpeg", data: PNG }],
+      [{ type: "image", mediaType: "image/svg+xml", data: JPEG }],
+      [{ type: "image", mediaType: "image/jpeg", data: `${JPEG.slice(0, -4)}"}],` }],
+      [{ type: "image", mediaType: "image/jpeg", data: `${JPEG}\\u0022` }],
+      [{ type: "image", source: { type: "url", url: "https://example.com/a.jpg" } }],
+      [{ type: "document", source: { type: "file", file_id: "file_1" } }],
+      [{ type: "pdf", data: JPEG }],
+      [{ type: "text", text: "  " }],
+      [{ type: "video", data: JPEG }],
+      ["x"],
+    ];
+    for (const attachments of bad) expect((await send(attachments)).status).toBe(400);
+    const assistant = await call("POST", "/v1/messages", {
+      token,
+      body: { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b", attachments: [{ type: "image", mediaType: "image/jpeg", data: JPEG }] }, { role: "user", content: "c" }] },
+    });
+    expect(assistant.status).toBe(400);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("no more than the Worker's ATTACHMENT_MB, and it says how much in the status", async () => {
+    const status = (await (await call("GET", "/v1/status", { token })).json()) as { attachments: { bytes: number } };
+    expect(status.attachments.bytes).toBe(3 * 1024 * 1024 * 0.75);
+    const big = JPEG.slice(0, 8) + "A".repeat(2 * 1024 * 1024);
+    expect((await send([{ type: "image", mediaType: "image/jpeg", data: big }, { type: "image", mediaType: "image/jpeg", data: big }])).status).toBe(413);
+    h.env.ATTACHMENT_MB = "10";
+    expect((await send([{ type: "image", mediaType: "image/jpeg", data: big }, { type: "image", mediaType: "image/jpeg", data: big }])).status).toBe(200);
+  });
+});
+
+describe("the body with attachments", () => {
+  it("is the same JSON as the SDK would write, with each file's base64 placed as it is", () => {
+    const params = {
+      model: "claude-opus-5-5",
+      messages: [
+        { role: "user", content: [{ type: "image" as const, source: { type: "base64" as const, media_type: "image/jpeg" as const, data: JPEG } }, { type: "text" as const, text: "fielua-marker \"引用\" \\" }] },
+        { role: "assistant", content: "はい" },
+        { role: "user", content: [{ type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: PDF }, title: "a.pdf" }, { type: "text" as const, text: "次" }] },
+      ],
+    };
+    const blob = attachedBody(params)!;
+    return blob.text().then((text) => {
+      expect(JSON.parse(text)).toEqual(params);
+      expect(text).not.toMatch(/fielua-[0-9a-f]{8}-/);
+      expect(attachedBody({ model: "x", messages: [{ role: "user", content: "text only" }] })).toBeNull();
+    });
   });
 });
 
@@ -428,6 +514,16 @@ describe("the request to Anthropic", () => {
       expect(seen[1]!.headers["anthropic-beta"]).toBeUndefined();
       expect(seen[1]!.body).toMatchObject({ model: "claude-haiku-5-5", max_tokens: 16000, output_config: { effort: "low" } });
       expect(seen[1]!.body).not.toHaveProperty("fallbacks");
+      // With a photo: the same request, the photo before the question.
+      const photo: Turn[] = [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: JPEG } }, { type: "text", text: "これは？" }] }];
+      await (await streamReply(cfg, top.choice, photo, "user-id-1")).text();
+      expect(seen[2]!.headers["content-type"]).toBe("application/json");
+      expect(seen[2]!.headers["anthropic-beta"]).toBe("server-side-fallback-2026-07-01");
+      expect(seen[2]!.body).toEqual({ ...seen[0]!.body, messages: photo });
+      await (await streamReply(cfg, haiku.choice, photo, "user-id-1")).text();
+      expect(seen[3]!.headers["anthropic-beta"]).toBeUndefined();
+      expect(seen[3]!.body).not.toHaveProperty("fallbacks");
+      expect(seen[3]!.body).toMatchObject({ model: "claude-haiku-5-5", messages: photo });
     } finally {
       server.close();
     }

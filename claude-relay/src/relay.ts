@@ -31,7 +31,7 @@ import {
   adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newID, newInviteCode, normalizeInviteCode,
   tokenHash, webSessionHash,
 } from "./security";
-import { parseTurns, readJSON, type Turn } from "./turns";
+import { attachmentLimits, parseTurns, readJSON, type Turn } from "./turns";
 import type { StoredKey } from "./webauthn";
 import { webConfig, webRoutes, type WebConfig } from "./web";
 
@@ -75,6 +75,8 @@ export interface RelayEnv {
   WEB_ORIGINS?: string;
   /** The web app's passkeys are for this domain ("suelira.com"). */
   WEB_RP_ID?: string;
+  /** How many MB of photos and PDFs one request may carry (3 on the free plan; turns.ts). */
+  ATTACHMENT_MB?: string;
 }
 
 export interface Deps {
@@ -235,6 +237,8 @@ async function status(request: Request, ctx: Context): Promise<Response> {
     effort: modelInfo(model)?.defaultEffort ?? null,
     models: catalog(live),
     credit: creditView(settings.credit, settings, person),
+    // What the app may attach, so it can shrink photos and say what fits before sending.
+    attachments: { bytes: Math.floor((attachmentLimits(ctx.env).chars * 3) / 4) },
     web: person.session
       ? { expiresAt: person.session.expiresAt, adminUntil: person.role === "developer" ? person.session.createdAt + WEB_ADMIN_FRESH_MS : null }
       : undefined,
@@ -276,9 +280,10 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   const settings = await deps.registry.settings();
   const reason = unavailable(person, settings, cfg);
   if (reason || !cfg) return json(503, { error: "unavailable", reason: reason ?? "not_configured" });
-  const body = await readJSON(request);
+  const limits = attachmentLimits(ctx.env);
+  const body = await readJSON(request, limits.bodyBytes);
   if (!body.ok) return json(body.error === "too_large" ? 413 : 400, { error: body.error });
-  const parsed = parseTurns(body.value);
+  const parsed = parseTurns(body.value, limits);
   if (!parsed.ok) return json(parsed.error === "too_large" ? 413 : 400, { error: parsed.error });
   const { model, effort } = body.value as { model?: unknown; effort?: unknown };
   const chosen = choose(cfg, model, effort, await (deps.models ?? liveModels)(cfg));

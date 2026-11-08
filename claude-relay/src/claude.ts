@@ -3,7 +3,7 @@
 // streamed back as Anthropic sends them.
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { Turn } from "./turns";
+import type { Block, Turn } from "./turns";
 
 export interface ClaudeConfig {
   apiKey: string;
@@ -203,7 +203,9 @@ export const SYSTEM_PROMPT = [
   "Reply in the language the person writes in.",
   "Fielua shows Markdown: headings, lists, tables, code blocks, and LaTeX math between $ signs.",
   "Keep answers focused, and go into detail when the person asks for it.",
-  "You see only this conversation's text: not the person's photos, files or other chats, and you cannot browse the web.",
+  "You see this conversation, with the photos, PDFs and text files the person attached to it.",
+  "A video arrives as a few still frames, each captioned with its time, and without sound.",
+  "You cannot see other chats or browse the web.",
 ].join(" ");
 
 /**
@@ -217,26 +219,71 @@ export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns:
   // Everything explicit: the SDK would otherwise read ANTHROPIC_* from
   // process.env, which the Workers runtime fills with the Worker's vars.
   const client = new Anthropic({ apiKey: cfg.apiKey, authToken: null, baseURL: cfg.baseURL, maxRetries: 2, timeout: 10 * 60 * 1000 });
-  return client.beta.messages
-    .create(
-      {
-        model: choice.model.id,
-        max_tokens: choice.maxTokens,
+  const params = {
+    model: choice.model.id,
+    max_tokens: choice.maxTokens,
+    stream: true as const,
+    system: SYSTEM_PROMPT,
+    messages: turns.map((turn) => ({ role: turn.role, content: turn.content })),
+    // Summaries of the thinking, not silence: a long think at 超高 keeps
+    // the app's connection busy. Billed the same as hidden thinking.
+    thinking: { type: "adaptive" as const, display: "summarized" as const },
+    // Always said, even at the model's default: the level the person chose.
+    output_config: { effort: choice.effort },
+    // An opaque id for Anthropic's abuse checks: never a name.
+    metadata: { user_id: userID },
+    // The conversation so far is the same at the next question.
+    cache_control: { type: "ephemeral" as const },
+  };
+  const fallback = choice.model.fallback;
+  const attached = attachedBody({ ...params, ...(fallback ? { fallbacks: "default" } : {}) });
+  if (attached) {
+    // Photos and PDFs: the body is written here, not by the SDK (see attachedBody).
+    return client
+      .post("/v1/messages?beta=true", {
+        body: attached,
+        headers: { "content-type": "application/json", ...(fallback ? { "anthropic-beta": "server-side-fallback-2026-07-01" } : {}) },
         stream: true,
-        system: SYSTEM_PROMPT,
-        messages: turns.map((turn) => ({ role: turn.role, content: turn.content })),
-        // Summaries of the thinking, not silence: a long think at 超高 keeps
-        // the app's connection busy. Billed the same as hidden thinking.
-        thinking: { type: "adaptive", display: "summarized" },
-        // Always said, even at the model's default: the level the person chose.
-        output_config: { effort: choice.effort },
-        // An opaque id for Anthropic's abuse checks: never a name.
-        metadata: { user_id: userID },
-        // The conversation so far is the same at the next question.
-        cache_control: { type: "ephemeral" },
-        ...(choice.model.fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-      },
-      { signal },
-    )
+        signal,
+      })
+      .asResponse();
+  }
+  return client.beta.messages
+    .create({ ...params, ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}) }, { signal })
     .asResponse();
+}
+
+/**
+ * The request body for a conversation with photos or PDFs, or null when it
+ * has none. Writing megabytes of base64 out again through JSON.stringify is
+ * the relay's most expensive step (about 4.5 ms a MB, where Cloudflare's
+ * free plan gives a request 10 ms), so each file's base64 goes into the body
+ * as it is, between the JSON written for everything else. That is safe
+ * because turns.ts let through only base64 characters, which never end or
+ * escape a JSON string; the place marker is new for every request, so no
+ * text in the conversation can stand in for it.
+ */
+export function attachedBody(params: { messages: { role: string; content: string | Block[] }[] } & Record<string, unknown>): Blob | null {
+  const files: string[] = [];
+  const marker = `fielua-${crypto.randomUUID()}`;
+  const messages = params.messages.map((message) => {
+    if (typeof message.content === "string") return message;
+    return {
+      role: message.role,
+      content: message.content.map((block) => {
+        if (block.type !== "text" && block.source.type === "base64") {
+          files.push(block.source.data);
+          return { ...block, source: { ...block.source, data: marker } };
+        }
+        return block;
+      }),
+    };
+  });
+  if (!files.length) return null;
+  const json = JSON.stringify({ ...params, messages });
+  const pieces = json.split(marker);
+  if (pieces.length !== files.length + 1) throw new Error("attachment marker");
+  const parts: string[] = [pieces[0]!];
+  files.forEach((data, index) => parts.push(data, pieces[index + 1]!));
+  return new Blob(parts, { type: "application/json" });
 }
