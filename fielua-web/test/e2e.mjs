@@ -179,6 +179,18 @@ const anthropic = createServer((req, res) => {
       res.end(JSON.stringify({ type: "error", error: { type: "billing_error", message: "Your credit balance is too low." } }));
       return;
     }
+    // "late": Anthropic takes a while before it answers at all (the page's question is still unanswered).
+    if (question === "late") {
+      let gone = false;
+      res.on("close", () => { if (!res.headersSent) { gone = true; upstream.closedEarly++; } });
+      setTimeout(() => { if (!gone) answer(question, body, res); }, 1500);
+      return;
+    }
+    answer(question, body, res);
+  });
+});
+function answer(question, body, res) {
+  {
     let reply = `受け取りました：${question}`;
     let pieceSize = 6;
     let every = 15;
@@ -218,7 +230,7 @@ const anthropic = createServer((req, res) => {
       for (let i = 0; i < 20; i++) pieces.push({ thinking: "…" });
       reply = "考えた結果、答えは 42 です。";
     }
-    if (question === "deep") {
+    if (question === "deep" || question === "late") {
       // A long think (3 seconds), then the reply: the connection is cut while it thinks.
       for (let i = 0; i < 30; i++) pieces.push({ thinking: "…" });
       reply = DEEP;
@@ -258,8 +270,8 @@ const anthropic = createServer((req, res) => {
       clearInterval(timer);
       if (!done) upstream.closedEarly++;
     });
-  });
-});
+  }
+}
 await new Promise((resolve) => anthropic.listen(0, "127.0.0.1", resolve));
 const anthropicPort = anthropic.address().port;
 
@@ -276,7 +288,7 @@ const cableServer = createCable((client) => {
   if (cable.refuse) { client.destroy(); return; }
   const far = connect(relayPort, "127.0.0.1");
   cable.sockets.add(client);
-  client.on("data", (chunk) => { if (/^GET \/v1\/replies\/[0-9a-f]{64} /m.test(chunk.toString("latin1"))) cable.replyGets++; });
+  client.on("data", (chunk) => { if (/^GET \/v1\/replies\/[0-9a-f]{32} /m.test(chunk.toString("latin1"))) cable.replyGets++; });
   client.pipe(far).pipe(client);
   const close = () => { cable.sockets.delete(client); client.destroy(); far.destroy(); };
   client.on("error", close).on("close", close);
@@ -636,6 +648,39 @@ try {
   check("and the relay lets go of it once the page has it", replyIDs.length === 3 && (await keptAtRelay(replyIDs[2])) === 404);
   const keptCopy = await dev.evaluate(() => JSON.parse(sessionStorage.getItem("fielua.chat")).messages.at(-1));
   check("kept as a finished reply (no id left behind)", keptCopy.end === "done" && keptCopy.text === DEEP && !("reply" in keptCopy), JSON.stringify(keptCopy).slice(0, 200));
+
+  // Safari went to the background before Anthropic had answered at all: the question isn't asked twice.
+  const askedKeys = [];
+  dev.on("request", (request) => {
+    const key = /\/v1\/replies\/([0-9a-f]{32})$/.exec(request.url())?.[1];
+    if (key && request.method() === "POST") askedKeys.push(key);
+  });
+  await sendMessage(dev, "late");
+  await sleep(400);
+  cable.refuse = true;
+  cable.cut();
+  await sleep(1000);
+  cable.refuse = false;
+  await replyDone(dev);
+  const lateCaption = await lastReply(dev).locator(".caption").textContent();
+  check("cut off before Anthropic answered: the reply still comes whole", (await lastReply(dev).locator(".reply").textContent()) === DEEP &&
+    (await lastReply(dev).locator(".notice").count()) === 0 && !lateCaption.includes("停止しました"), lateCaption);
+  check("and the question was asked once, never stopped", asked("late") === 1 && upstream.closedEarly === closedBeforeDeep, `${asked("late")} ${upstream.closedEarly - closedBeforeDeep}`);
+
+  // Stopped before Anthropic answered: nothing is left at the relay, and Anthropic stops (or is never asked).
+  await sendMessage(dev, "late");
+  await sleep(300);
+  await dev.click("#send");
+  await dev.waitForFunction(() => !document.querySelector("#composer").classList.contains("streaming"), null, { timeout: 5000 });
+  await sleep(2500);
+  const stoppedKey = askedKeys.at(-1);
+  const lateAsked = asked("late") - 1;
+  check("stopped before the answer: nothing goes on at Anthropic", (lateAsked === 0 || upstream.closedEarly === closedBeforeDeep + 1) && upstream.closedEarly <= closedBeforeDeep + 1, `${lateAsked} ${upstream.closedEarly - closedBeforeDeep}`);
+  check("and nothing is kept at the relay", askedKeys.length === 2 && (await keptAtRelay(stoppedKey)) === 404);
+  check("the composer is ready again", (await dev.getAttribute("#send", "aria-label")) === "送信");
+  // The question stopped before any answer goes again with the next one (as the app does): one more, so the photos below go alone.
+  await sendMessage(dev, "続けて");
+  await waitReply(dev);
 
   // MARK: Photos, a video and files, as the iPhone app attaches them
   // A large photo with its location in it (an Exif block), made in the browser.

@@ -46,6 +46,9 @@ const CONTAINER_DAYS = 29;
 const FILE_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** A kept reply's key: chosen here before it is asked, so it can be stopped or read again whatever becomes of the question (before `state`: a reload's copy is read with it). */
+const REPLY_KEY = /^[0-9a-f]{32}$/;
+
 const state = {
   status: null,
   chat: loadChat(),
@@ -105,7 +108,7 @@ function restoreChat(value) {
       message.end = message.error ? "failed" : "stopped";
       message.unfinished = true;
       // The relay may still have it (resumeCutReply): only this tab's own copy is ever picked up again.
-      if (typeof message.reply === "string" && /^[0-9a-f]{64}$/.test(message.reply)) message.cutReply = message.reply;
+      if (typeof message.reply === "string" && REPLY_KEY.test(message.reply)) message.cutReply = message.reply;
     }
     delete message.reply;
   }
@@ -238,7 +241,8 @@ function flushHistory() {
 /** A reply being written: what has come so far is kept now (the page may go before the next checkpoint). */
 function syncStreaming() {
   const run = state.streaming;
-  if (!run || !run.pacer.text || run.message.text === run.pacer.text) return;
+  // Read again after a reload and not as far as before yet: what the message had stays.
+  if (!run || !run.pacer.text || run.message.text === run.pacer.text || run.pacer.text.length < (run.known ?? 0)) return;
   run.message.text = run.pacer.text;
   saveChat(run.chat);
 }
@@ -500,10 +504,11 @@ async function enterChat(signedIn = false) {
   loadMath();
   if (!matchMedia("(pointer: coarse)").matches) $("input").focus();
   watchExpiry();
-  // Back after Safari reloaded the page: a reply that was still coming is picked up again.
-  if (!signedIn) resumeCutReply();
   // The history after the chat shows (it waits on the relay for the key).
-  await unlockHistory();
+  const unlocked = unlockHistory();
+  // Back after Safari reloaded the page: a reply that was still coming is picked up again, once the history is open.
+  if (!signedIn) resumeCutReply(unlocked);
+  await unlocked;
 }
 
 let expiryTimer = 0;
@@ -1242,22 +1247,37 @@ async function retry(failed) {
   await ask();
 }
 
+/** Stops the reply being written; settles once the relay heard of it (for a kept reply). */
 function stop() {
   const run = state.streaming;
-  if (!run) return;
+  if (!run) return Promise.resolve();
   run.controller.abort();
   // A kept reply goes on at the relay without its connection: it is stopped there too.
-  forgetReply(run);
+  return forgetReply(run);
 }
 
-/** The relay lets go of a kept reply: stopped if it is still being written. Once per reply. */
+/**
+ * The relay lets go of a kept reply: stopped if it is still being written,
+ * or never begun if the question hasn't got there yet. Once per reply, with
+ * the sign-in it was asked under (signing out clears the tab's first).
+ */
 function forgetReply(run) {
-  if (!run.reply || run.forgotten) return;
-  run.forgotten = true;
-  call(`/v1/replies/${run.reply}`, { method: "DELETE" }).catch(() => {});
+  if (!run.reply) return Promise.resolve();
+  run.forgetting ??= dropReply(run.reply, session.get()?.token ?? run.token);
+  return run.forgetting;
 }
 
-const REPLY_ID = /^[0-9a-f]{64}$/;
+function dropReply(key, token) {
+  const send = () => call(`/v1/replies/${key}`, { method: "DELETE", ...(token ? { token } : {}) });
+  return send().then(() => {}, () => {
+    // No connection now: once more when there is one (else the relay lets it go by itself, within 40 minutes).
+    if (navigator.onLine === false) addEventListener("online", () => { send().catch(() => {}); }, { once: true });
+  });
+}
+
+function newReplyKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 /** How long after its last save a reply cut off by a reload is still looked for at the relay (it keeps one 10 minutes after it ended). */
 const CUT_REPLY_MS = 40 * 60 * 1000;
 
@@ -1294,12 +1314,15 @@ function pause(ms, signal) {
 
 /**
  * While this tab writes a kept reply, no other tab picks it up (a copy of
- * this tab's storage after a reload elsewhere would). `wait` false: run
- * `work` only if no one holds it now.
+ * this tab's storage, as Safari's 「タブを複製」 makes, would). `waitMs`:
+ * how long to wait for it at most (the page before a reload lets go of it
+ * a moment after the new one starts); then `work` doesn't run.
  */
-function holdingReply(id, work, wait = true) {
+function holdingReply(id, work, waitMs = Infinity) {
   if (!navigator.locks?.request) return work();
-  return navigator.locks.request(`fielua-reply-${id}`, wait ? {} : { ifAvailable: true }, (lock) => (lock ? work() : undefined));
+  const options = Number.isFinite(waitMs) && typeof AbortSignal.timeout === "function" ? { signal: AbortSignal.timeout(waitMs) } : {};
+  return navigator.locks.request(`fielua-reply-${id}`, options, () => work())
+    .catch((error) => { if (!options.signal?.aborted || error !== options.signal.reason) throw error; });
 }
 
 /**
@@ -1308,14 +1331,16 @@ function holdingReply(id, work, wait = true) {
  * shows (a reply read again from its start after a reload): until the
  * reply gets that far again, nothing is redrawn.
  */
-function beginRun(message, element, chat, known = 0) {
+function beginRun(message, element, chat, known = 0, controller = new AbortController()) {
   const entry = state.views.get(message);
   entry.reply.setAttribute("aria-busy", "true");
   const thinking = h("div", { class: "thinking" }, h("span", { class: "glow", "aria-hidden": "true" }), h("span", { class: "label", text: "" }));
   if (!known) element.append(thinking);
-  const controller = new AbortController();
   const pacer = new Pacer();
-  const run = { controller, message, chat, pacer, entry, thinking, known, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0, reply: null };
+  const run = {
+    controller, message, chat, pacer, entry, thinking, known, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0, reply: null,
+    token: session.get()?.token ?? null,
+  };
   state.streaming = run;
   updateComposer();
   renderHistory();
@@ -1328,12 +1353,18 @@ function beginRun(message, element, chat, known = 0) {
 
   run.render = (force = false) => {
     const now = performance.now();
-    if (pacer.text.length < run.known && !run.ended) {
-      // Read again from the start: what the message shows already stays as it is until the reply passes it.
-      pacer.shown = pacer.text.length;
-      pacer.lastTick = now / 1000;
-      run.frame = requestAnimationFrame(() => run.render());
-      return;
+    if (run.known) {
+      // Read again from the start: what the message shows already stays as it is until the reply
+      // passes it (ended short of it, it broke off at the relay: finish keeps what was shown),
+      // and is never laid out again.
+      if (pacer.text.length < run.known) {
+        if (run.ended) { run.finish(); return; }
+        pacer.shown = pacer.text.length;
+        pacer.lastTick = now / 1000;
+        run.frame = requestAnimationFrame(() => run.render());
+        return;
+      }
+      if (pacer.shown < run.known) { pacer.shown = run.known; pacer.carry = 0; }
     }
     const shown = pacer.advance(now / 1000);
     // About 24 steps a second, fewer as a reply grows very long (the app's ReplyPacer.interval).
@@ -1396,15 +1427,26 @@ async function ask() {
   scrollToEnd(true);
   const run = beginRun(message, element, state.chat);
   const { controller, pacer } = run;
-  // A reply the relay keeps (when it can): Safari's background no longer ends it.
-  const kept = state.status?.resumable === true;
+  // A reply the relay keeps (when it can): Safari's background no longer ends it. Its key is
+  // kept with the message before it is asked, so a reload while Claude thinks picks it up again.
+  const key = state.status?.resumable === true ? newReplyKey() : null;
+  if (key) {
+    run.reply = key;
+    message.reply = key;
+    saveChat(run.chat);
+  }
 
   let response;
   try {
-    response = await call(kept ? "/v1/replies" : "/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort, ...(tools ? { tools } : {}) }, signal: controller.signal });
+    response = await call(key ? `/v1/replies/${key}` : "/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort, ...(tools ? { tools } : {}) }, signal: controller.signal });
   } catch (error) {
+    // No answer came (Safari went to the background at once, say): the relay may have the reply all the same.
+    // With no connection at all, the question most likely never left: said at once, as before.
+    if (key && error?.name !== "AbortError" && navigator.onLine !== false) { await holdingReply(key, () => follow(run, null, error)); return; }
     if (error?.name === "AbortError") message.end = "stopped";
     else run.fail(errorText(0, "network"));
+    forgetReply(run);
+    delete message.reply;
     run.ended = true;
     pacer.generating = false;
     run.finish();
@@ -1451,57 +1493,69 @@ async function ask() {
       showLogin("main", errorText(401, "unauthorized"));
       return;
     }
-    run.fail(errorText(response.status, body.error, body));
+    if (controller.signal.aborted) message.end = "stopped";
+    else run.fail(errorText(response.status, body.error, body));
+    delete message.reply;
     run.ended = true;
     pacer.generating = false;
     run.finish();
     if (body.error === "unavailable") refreshStatus();
     return;
   }
-  const id = response.headers.get("X-Fielua-Reply") ?? "";
-  if (kept && REPLY_ID.test(id)) {
-    run.reply = id;
-    // Kept now, while Claude may still be thinking (no text yet): a reload picks it up again (resumeCutReply).
-    message.reply = id;
-    saveChat(run.chat);
-    await holdingReply(id, () => follow(run, response));
-  } else {
-    await follow(run, response);
-  }
+  if (key) await holdingReply(key, () => follow(run, response));
+  else await follow(run, response);
 }
 
 /**
  * Safari reloaded the page (it may, after a while in the background) while
  * a reply was still coming: the relay still has it, so it is read again
- * from its start into the same message, and on to its end.
+ * from its start into the same message, and on to its end. Only after the
+ * history is open (a newer copy from another tab, or a deletion there,
+ * wins), and only this tab's own copy.
  */
-async function resumeCutReply() {
+async function resumeCutReply(unlocked) {
   const chat = state.chat;
   const message = chat.messages[chat.messages.length - 1];
-  const id = message?.role === "assistant" ? message.cutReply : null;
-  if (!id) return;
-  delete message.cutReply;
-  const usable = () => state.chat === chat && isLast(message) && !state.streaming && session.get() && state.views.get(message);
-  if (state.status?.resumable !== true || !usable() || Date.now() - (chat.savedAt ?? 0) > CUT_REPLY_MS) return;
-  await holdingReply(id, async () => {
-    let response;
-    try { response = await call(`/v1/replies/${id}`); } catch { return; }
-    // Gone (ended more than 10 minutes ago, stopped, or the relay restarted): it stays as it was, stopped.
-    if (!response.ok || !response.body || !usable()) { response.body?.cancel().catch(() => {}); return; }
+  const key = message?.role === "assistant" ? message.cutReply : null;
+  if (!key) return;
+  await Promise.resolve(unlocked).catch(() => {});
+  const usable = () => state.chat === chat && isLast(message) && !state.streaming && !!session.get() && state.views.has(message);
+  if (!usable() || Date.now() - (chat.savedAt ?? 0) > CUT_REPLY_MS) { delete message.cutReply; return; }
+  const controller = new AbortController();
+  await holdingReply(key, async () => {
+    let response = null;
+    // As a broken connection is: once the page is back, a few tries, until the relay says it has none.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try { await whenReachable(controller.signal); } catch { break; }
+      if (!usable()) break;
+      try { response = await call(`/v1/replies/${key}`, { signal: controller.signal }); } catch { response = null; }
+      if (response?.ok && response.body) break;
+      const gone = response && response.status !== 409 && response.status !== 429 && response.status < 500;
+      response?.body?.cancel().catch(() => {});
+      response = null;
+      if (gone) break;
+      try { await pause(Math.min(1000 * 2 ** attempt, 8000), controller.signal); } catch { break; }
+    }
+    delete message.cutReply;
+    if (!response || !usable()) {
+      response?.body?.cancel().catch(() => {});
+      // It stays as it was, stopped; if the relay still writes it, it stops there too.
+      dropReply(key, session.get()?.token);
+      return;
+    }
     const entry = state.views.get(message);
     const known = message.text.length;
-    Object.assign(message, { end: "streaming", error: undefined, unfinished: false, activity: null, reply: id });
-    if (message.search) message.search = null;
-    if (Array.isArray(message.files)) message.files = [];
+    // The search and the files it named come again as it is read; each is taken once.
+    Object.assign(message, { end: "streaming", error: undefined, unfinished: false, activity: null, reply: key });
     finishElement(message);
-    const run = beginRun(message, entry.element, chat, known);
-    run.reply = id;
+    const run = beginRun(message, entry.element, chat, known, controller);
+    run.reply = key;
     await follow(run, response);
-  }, false);
+  }, 5000);
 }
 
 /** Reads a reply's events into its run, to the end; a kept reply over as many connections as it takes. */
-async function follow(run, response) {
+async function follow(run, response, unanswered = null) {
   const { controller, message, chat, pacer, thinking } = run;
   run.frame = requestAnimationFrame(() => run.render());
   let sawDone = false;
@@ -1533,8 +1587,9 @@ async function follow(run, response) {
           if (failure?.name === "AbortError") throw failure;
         }
         if (again?.ok && again.body) { follower.receivedAt = Date.now(); return again.body; }
-        // Gone at the relay (or the sign-in ran out): ends as any broken reply does.
-        if (again && again.status !== 429 && again.status < 500) throw error;
+        again?.body?.cancel().catch(() => {});
+        // Gone at the relay (or the sign-in ran out): ends as any broken reply does. 409: Anthropic hasn't begun yet.
+        if (again && again.status !== 409 && again.status !== 429 && again.status < 500) throw error;
         if (attempt >= 5) throw error;
         await pause(Math.min(1000 * 2 ** attempt, 8000), controller.signal);
       }
@@ -1562,8 +1617,12 @@ async function follow(run, response) {
     };
   }
 
+  let heard = false;
   try {
-    for await (const event of readEvents(response.body, reopen, follower)) {
+    // The question got no answer: the reply is looked for at the relay from the start.
+    const body = response ? response.body : await reopen(unanswered);
+    for await (const event of readEvents(body, reopen, follower)) {
+      heard = true;
       if (event.type === "started") { message.served = event.model; keepContainer(event.container); }
       else if (event.type === "thinking") {
         const label = thinking.querySelector(".label");
@@ -1616,7 +1675,8 @@ async function follow(run, response) {
     if (error?.name === "AbortError" || controller.signal.aborted) {
       message.end = "stopped";
     } else if (!message.error) {
-      run.fail("Claude との接続が切れました。ここまでの返信は残しています。");
+      // Never reached the relay (or it never began): as a question that couldn't be sent.
+      run.fail(unanswered && !heard ? errorText(0, "network") : "Claude との接続が切れました。ここまでの返信は残しています。");
     }
   }
   run.unwatch?.();
@@ -2005,10 +2065,12 @@ async function developerSection() {
 
 async function logout() {
   const token = session.get()?.token;
+  // A kept reply is stopped at the relay while the sign-in still counts there.
+  const stopped = stop();
   signedOut();
   forgetChat();
   clearDraft();
-  if (token) call("/web/logout", { method: "POST", body: {}, token }).catch(() => {});
+  if (token) stopped.finally(() => call("/web/logout", { method: "POST", body: {}, token }).catch(() => {}));
   closeSheets();
   showLogin("main", "ログアウトしました。");
 }
@@ -2022,6 +2084,8 @@ async function leave() {
   if (!ok) return;
   // Which database is this person's (asked now if the key didn't come at sign-in), before the key goes.
   if (!archive.isOpen()) await unlockHistory().catch(() => {});
+  // A kept reply is stopped at the relay while this person is still registered there.
+  await Promise.race([stop(), new Promise((resolve) => setTimeout(resolve, 3000))]);
   try {
     await callJSON("/v1/leave", { method: "POST", body: {} });
   } catch (error) {

@@ -140,6 +140,8 @@ export async function* readEvents(body, reopen = null, follow = null) {
         break;
       }
       let value = next.value;
+      // Bytes read again count too: the connection is alive while it catches up.
+      if (follow) follow.receivedAt = Date.now();
       if (skip > 0) {
         if (value.length <= skip) { skip -= value.length; continue; }
         value = value.subarray(skip);
@@ -147,7 +149,6 @@ export async function* readEvents(body, reopen = null, follow = null) {
       }
       received += value.length;
       freshSinceReopen = true;
-      if (follow) follow.receivedAt = Date.now();
       buffer += decoder.decode(value, { stream: true });
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
