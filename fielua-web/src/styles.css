@@ -465,3 +465,99 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 }
 .thinking .label:empty { display: none; }
 .card strong { font-weight: 650; }
+
+/* MARK: Attachments (as the iPhone app shows them) */
+
+/* The plus: a label-colored plus in a quiet circle, inside the bar. */
+.composer { padding-left: 6px; }
+.attach {
+  flex: none; width: 34px; height: 34px; margin: 3px 0; border: 0; border-radius: 50%; padding: 0;
+  display: grid; place-items: center; background: var(--chip); color: var(--ink);
+  transition: transform 0.15s, background-color 0.15s;
+}
+.attach:active { transform: scale(0.94); }
+.attach[aria-expanded="true"] { background: var(--selection); }
+.attach svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
+.composer textarea { padding-left: 4px; }
+
+/* The plus menu: as iOS draws a menu, the label first and its symbol at the end. */
+.attach-menu {
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 10; min-width: 232px; padding: 0;
+  border-radius: 16px; overflow: hidden;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(24px); backdrop-filter: saturate(180%) blur(24px);
+  border: 0.5px solid var(--input-border); box-shadow: 0 12px 40px rgba(60, 40, 10, 0.16), 0 1px 3px rgba(60, 40, 10, 0.08);
+  transform-origin: 18px 100%; animation: menu-open 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+.attach-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 46px;
+  padding: 0 16px; border: 0; background: none; color: var(--ink); font-size: 17px; text-align: left;
+}
+.attach-menu button + button { border-top: 0.5px solid var(--md-line); }
+.attach-menu button:active:not(:disabled), .attach-menu button:hover:not(:disabled) { background: var(--chip); }
+.attach-menu button:disabled { opacity: 0.38; cursor: default; }
+.attach-menu svg { width: 21px; height: 21px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+@keyframes menu-open { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+
+/* The draft's attachments above the bar, each with its ×. */
+.tray {
+  max-width: var(--column); margin: 0 auto 6px; display: flex; gap: 8px; overflow-x: auto;
+  padding: 10px 10px 2px 2px; scrollbar-width: none;
+}
+.tray::-webkit-scrollbar { display: none; }
+.tray-item {
+  flex: none; position: relative; height: 64px; border-radius: 12px; background: var(--chip);
+  animation: tray-in 0.22s ease-out;
+}
+.tray-item.picture { width: 64px; border-radius: 10px; }
+.tray-item.picture img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; display: block; }
+.tray-item.file { width: 130px; display: flex; align-items: center; gap: 6px; padding: 0 10px; }
+.tray-item.file .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: var(--icon); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.tray-name { font-size: 12px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.tray-remove {
+  position: absolute; top: -12px; right: -12px; width: 32px; height: 32px; padding: 0; border: 0; background: none;
+  display: grid; place-items: center;
+}
+.remove-mark { width: 21px; height: 21px; }
+.remove-mark circle { fill: #8E8E93; stroke: none; }
+.remove-mark path { fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; }
+.tray-status { max-width: var(--column); margin: 0 auto 6px; font-size: 12px; color: var(--secondary); text-align: center; }
+@keyframes tray-in { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: none; } }
+
+/* Sent photos and videos stand on their own above the bubble; files sit in it. */
+.sent { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(80%, 560px); }
+.sent .bubble { max-width: 100%; }
+.sent-picture {
+  position: relative; display: block; padding: 0; border: 0; border-radius: 18px; overflow: hidden;
+  background: var(--chip); cursor: zoom-in;
+}
+.sent-picture img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.play {
+  position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
+  display: grid; place-items: center; background: rgba(0, 0, 0, 0.35); pointer-events: none;
+}
+.play svg { width: 20px; height: 20px; fill: #fff; stroke: none; margin-left: 2px; }
+.play.small { width: 24px; height: 24px; margin: -12px 0 0 -12px; }
+.play.small svg { width: 13px; height: 13px; margin-left: 1px; }
+.duration {
+  position: absolute; left: 9px; bottom: 7px; color: #fff; font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums; text-shadow: 0 0 3px rgba(0, 0, 0, 0.55); pointer-events: none;
+}
+.sent-note { margin: 0; max-width: 220px; font-size: 11px; line-height: 1.35; color: var(--secondary); text-align: right; }
+.bubble-files { display: grid; gap: 6px; padding: 2px 0; white-space: normal; }
+.bubble-files + .bubble-text { margin-top: 6px; }
+.file-chip { display: flex; align-items: center; gap: 8px; width: 200px; max-width: 100%; }
+.file-chip .icon { width: 24px; height: 24px; flex: none; fill: none; stroke: var(--icon); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.file-text { display: grid; min-width: 0; }
+.file-name { font-size: 13px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { font-size: 11px; line-height: 1.3; color: var(--secondary); }
+
+/* Files carried over the chat. */
+.chat.dropping .composer { border-color: var(--active); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent), var(--bar-shadow); }
+
+/* A sent photo or video, larger. */
+.sheet.viewer { max-width: 900px; height: min(88dvh, 88vh); }
+.sheet.viewer .sheet-head h2 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.viewer-body { flex: 1; min-height: 0; display: grid; place-items: center; padding: 8px 16px calc(var(--safe-bottom) + 16px); }
+.viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; border-radius: 12px; display: block; }
+.composer-area.has-tray { background: linear-gradient(to bottom, transparent, var(--paper) 12px); }

@@ -41,6 +41,7 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
 - ブラウザから呼べるのは `wrangler.toml` の `WEB_ORIGINS`（`https://suelira.com`、`https://www.suelira.com`）のページだけです（CORS）。空にすると Web 版は止まります。
 - Web 版のログインはパスキーです（`/web/passkey/…`、RP ID は `WEB_RP_ID` の `suelira.com`、ユーザー確認つき）。中継サーバーが署名を確かめ、12 時間のセッション（`fws_`、ハッシュだけを保存）を渡します。開発者の操作は、ログインから 15 分を過ぎるともう一度パスキーを求めます。
 - iPhone がなくても、Web の「開発者の初期設定」で管理キー（`ADMIN_TOKEN`）を一度入れて、開発者として登録できます。
+- 写真（JPEG・PNG・GIF・WebP）、PDF、テキストファイルを、本人の発言に付けて送れます（`src/turns.ts`）。中継サーバーは先頭のバイトで種類を確かめ、Anthropic への本文に base64 をそのまま差し込みます（作り直さないので CPU をほとんど使いません）。1 回に送れる量は `ATTACHMENT_MB`（無料プランの 10 ms に収まる 3 が標準。Workers Paid なら 20 まで上げられます）。
 - 残りのクレジットは推定です。開発者が Console の残高を入れ、その後の返事の使用量に公開料金をかけて引きます（Anthropic に残高を読む API はありません）。
 
 ## 確かめ方

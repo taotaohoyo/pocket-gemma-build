@@ -3,6 +3,7 @@
 // the Anthropic API key lives only in the relay (a Cloudflare secret).
 
 import { RELAY, RelayError, call, callJSON, session } from "./api.js";
+import { ACCEPT, AttachError, LIMITS as ATTACH, prepare, release, sizeLabel, stored, timeLabel } from "./attach.js";
 import { attachReplyActions, copyText, loadMath, ReplyView } from "./markdown.js";
 import { createPasskey, forgetPasskey, newAdminKey, passkeysSupported, usePasskey } from "./passkey.js";
 import { Pacer, readEvents } from "./stream.js";
@@ -20,6 +21,9 @@ const EFFORT = {
 };
 /** Fielua's top choice: Claude Opus 5.5 at 超高. */
 const TOP = { model: "claude-opus-5-5", effort: "xhigh" };
+/** The level every model starts at until the person chooses one (Hachimoto さん, 2026-11-08). */
+const START_EFFORT = "medium";
+const startEffort = (model) => (model.efforts.includes(START_EFFORT) ? START_EFFORT : model.defaultEffort);
 /** The relay's catalog as this version knows it, in Fielua's order, until the relay answers. */
 const BUILT_IN = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
@@ -41,6 +45,10 @@ const state = {
   prefs: loadPrefs(),
   streaming: null,
   views: new Map(),
+  /** What is attached to the message being written. */
+  draft: [],
+  /** Files being made ready. */
+  preparing: 0,
 };
 
 // MARK: Storage (this device only; the conversation only in this tab)
@@ -64,14 +72,22 @@ function loadChat() {
   return { messages: [] };
 }
 function saveChat() {
+  const write = (pictures) => sessionStorage.setItem("fielua.chat", JSON.stringify({
+    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments }) => ({
+      role, text, model, effort, served, end, error,
+      ...(attachments?.length ? { attachments: attachments.map((a) => ({ ...stored(a), thumb: pictures ? a.thumb : undefined })) } : {}),
+    })),
+  }));
   try {
-    sessionStorage.setItem("fielua.chat", JSON.stringify({
-      messages: state.chat.messages.map(({ role, text, model, effort, served, end, error }) => ({ role, text, model, effort, served, end, error })),
-    }));
-  } catch { /* too large: kept on the page only */ }
+    write(true);
+  } catch {
+    // The tab's storage is full: the names stay, the pictures only on the page.
+    try { write(false); } catch { /* kept on the page only */ }
+  }
 }
 function forgetChat() {
   sessionStorage.removeItem("fielua.chat");
+  for (const message of state.chat.messages) message.attachments?.forEach(release);
   state.chat = { messages: [] };
 }
 
@@ -101,7 +117,7 @@ function toast(text) {
   element.textContent = text;
   element.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { element.hidden = true; }, 2400);
+  toastTimer = setTimeout(() => { element.hidden = true; }, Math.max(2400, text.length * 90));
 }
 
 function confirmDialog({ title, body = [], ok = "OK", danger = false, check = null }) {
@@ -165,8 +181,9 @@ function errorText(status, code, body = {}) {
     case "model_unavailable": return "このモデルは今 Anthropic で使えません。モデルを選び直してください。";
     case "unsupported_model":
     case "unsupported_effort": return "このモデルか推論レベルは、中継サーバーで使えません。モデルの設定で選び直してください。";
-    case "too_large": return "会話が長すぎます。新しい会話でお試しください。";
-    case "rejected": return "Anthropic がこの依頼を受け付けませんでした。新しい会話でお試しください。";
+    case "too_large": return "会話か添付が大きすぎます。添付を減らすか、新しい会話でお試しください。";
+    case "bad_attachment": return "送れない添付がありました。外してからお試しください。";
+    case "rejected": return "Anthropic がこの依頼を受け付けませんでした。添付を外すか、新しい会話でお試しください。";
     case "upstream_unreachable":
     case "upstream": return "Anthropic に接続できませんでした。少し待ってからお試しください。";
     case "cancelled": return "停止しました。";
@@ -358,7 +375,7 @@ function choice() {
   const list = catalog();
   const model = list.find((m) => m.id === state.prefs.model && usable(m)) ?? list.find(usable) ?? list[0];
   const saved = state.prefs.efforts[model.id];
-  const preferred = model.id === TOP.model ? TOP.effort : model.defaultEffort;
+  const preferred = startEffort(model);
   const effort = model.efforts.includes(saved) ? saved : model.efforts.includes(preferred) ? preferred : model.efforts[0] ?? "medium";
   return { model, effort };
 }
@@ -405,9 +422,7 @@ function renderThread() {
 }
 
 function messageElement(message) {
-  if (message.role === "user") {
-    return h("div", { class: "msg user" }, h("div", { class: "bubble", text: message.text }));
-  }
+  if (message.role === "user") return sentElement(message);
   const reply = h("div", { class: "reply" });
   const element = h("div", { class: "msg assistant" }, reply);
   const view = new ReplyView(reply);
@@ -415,6 +430,262 @@ function messageElement(message) {
   if (message.text) view.update(message.text, { live: false, animate: false });
   finishElement(message);
   return element;
+}
+
+// MARK: Attachments, as the iPhone app shows them
+
+const ICONS = {
+  plus: ["M12 5.5v13M5.5 12h13"],
+  photo: ["M6 5.5h12a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 18 18.5H6A2.5 2.5 0 0 1 3.5 16V8A2.5 2.5 0 0 1 6 5.5Z", "m4 16.5 4.5-4.5 3.5 3.5 2.5-2.5 5.5 5.5", "M15.5 9.5h.01"],
+  video: ["M5.5 6.5h8a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5h-8A2.5 2.5 0 0 1 3 15V9a2.5 2.5 0 0 1 2.5-2.5Z", "m16 10.5 5-3v9l-5-3"],
+  folder: ["M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"],
+  doc: ["M7 3.5h6.5L18 8v12.5H7Z", "M13.5 3.5V8H18", "M9.5 12.5h6M9.5 16h4"],
+  play: ["M9 6.8v10.4l8.2-5.2Z"],
+  xmark: ["M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"],
+};
+
+function icon(name, cls = "icon") {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", cls);
+  for (const d of ICONS[name]) {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+/** The app's xmark.circle.fill: a white cross on a gray disc. */
+function removeMark() {
+  const svg = icon("xmark", "remove-mark");
+  const disc = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  disc.setAttribute("cx", "12");
+  disc.setAttribute("cy", "12");
+  disc.setAttribute("r", "10");
+  svg.prepend(disc);
+  return svg;
+}
+
+const fileIcon = (attachment) => (attachment.kind === "image" ? "photo" : attachment.kind === "video" ? "video" : "doc");
+const showsAsPicture = (attachment) => (attachment.kind === "image" || attachment.kind === "video") && !!attachment.thumb;
+
+/** A sent photo's box: its own shape within 220 × 260, never thinner than 72 (the app's SentPhoto). */
+function pictureBox(attachment) {
+  const { width, height } = attachment;
+  if (!width || !height) return { width: 200, height: 200 };
+  const scale = Math.min(220 / width, 260 / height);
+  return { width: Math.max(72, Math.round(width * scale)), height: Math.max(72, Math.round(height * scale)) };
+}
+
+function pictureElement(attachment) {
+  const box = pictureBox(attachment);
+  const figure = h("button", {
+    type: "button", class: `sent-picture${attachment.kind === "video" ? " video" : ""}`,
+    "aria-label": `${attachment.kind === "video" ? "動画" : "写真"}を開く: ${attachment.name}`,
+    onclick: () => openViewer(attachment),
+  }, h("img", { src: attachment.thumb, alt: "", width: String(box.width), height: String(box.height), draggable: "false" }));
+  figure.style.width = `${box.width}px`;
+  figure.style.height = `${box.height}px`;
+  if (attachment.kind === "video") {
+    figure.append(h("span", { class: "play" }, icon("play")));
+    if (attachment.duration) figure.append(h("span", { class: "duration", text: timeLabel(attachment.duration) }));
+  }
+  return figure;
+}
+
+function fileMeta(attachment) {
+  const kind = attachment.kind === "pdf" ? "PDF" : attachment.kind === "text" ? "テキスト" : attachment.kind === "video" ? "動画" : "写真";
+  return attachment.size ? `${kind} · ${sizeLabel(attachment.size)}` : kind;
+}
+
+function fileChip(attachment) {
+  return h("div", { class: "file-chip" }, icon(fileIcon(attachment)),
+    h("span", { class: "file-text" }, h("span", { class: "file-name", text: attachment.name }), h("span", { class: "file-meta", text: fileMeta(attachment) })));
+}
+
+/** The person's message: photos and videos on their own above the bubble, files inside it with the text. */
+function sentElement(message) {
+  const column = h("div", { class: "sent" });
+  const attachments = message.attachments ?? [];
+  for (const attachment of attachments.filter(showsAsPicture)) {
+    column.append(pictureElement(attachment));
+    if (attachment.note) column.append(h("p", { class: "sent-note", text: attachment.note }));
+  }
+  const files = attachments.filter((attachment) => !showsAsPicture(attachment));
+  if (files.length || message.text) {
+    const bubble = h("div", { class: "bubble" });
+    if (files.length) bubble.append(h("div", { class: "bubble-files" }, files.map(fileChip)));
+    if (message.text) bubble.append(h("div", { class: "bubble-text", text: message.text }));
+    column.append(bubble);
+  }
+  return h("div", { class: "msg user" }, column);
+}
+
+/** A photo at its sent size, or a video while this page still holds it. */
+function openViewer(attachment) {
+  const body = $("viewer-body");
+  if (attachment.kind === "video" && attachment.play) {
+    body.replaceChildren(h("video", { src: attachment.play, controls: true, playsinline: true, autoplay: true }));
+  } else {
+    const data = attachment.kind === "image" ? attachment.parts?.[0]?.data : null;
+    body.replaceChildren(h("img", { src: data ? `data:image/jpeg;base64,${data}` : attachment.thumb, alt: attachment.name }));
+  }
+  $("viewer-title").textContent = attachment.name;
+  $("viewer").showModal();
+}
+
+/** What one request may carry as base64, as the relay says; 0 when it does not say (an older relay). */
+function attachChars() {
+  const most = state.status?.attachments?.bytes;
+  return Number.isFinite(most) && most > 0 ? Math.floor((most * 4) / 3) : 0;
+}
+
+function draftProblem(attachment, maxChars) {
+  const sum = (key) => state.draft.reduce((total, item) => total + item[key], attachment[key]);
+  const parts = state.draft.reduce((total, item) => total + item.parts.length, attachment.parts.length);
+  if (sum("chars") > maxChars) return `添付が大きすぎます。1 回に送れるのは合計 ${sizeLabel((maxChars * 3) / 4, true)} までです。`;
+  if (parts > ATTACH.partsPerMessage || sum("images") > ATTACH.images) return "写真と動画の場面が多すぎます。分けて送ってください。";
+  if (sum("documents") > ATTACH.documents) return `PDF とテキストは 1 回に ${ATTACH.documents} 個までです。`;
+  if (sum("textBytes") > ATTACH.textBytes) return `テキストファイルは合計 ${sizeLabel(ATTACH.textBytes, true)} までです。`;
+  return null;
+}
+
+let preparingQueue = Promise.resolve();
+/** Counts new chats and sign-outs, so a file still being read then is dropped. */
+let draftEpoch = 0;
+
+/** Picked, pasted or dropped files into the draft: one at a time (a phone's memory), in the order picked. */
+function addFiles(list) {
+  const files = Array.from(list ?? []).filter((file) => file && file.size >= 0);
+  if (!files.length) return preparingQueue;
+  const maxChars = attachChars();
+  if (!maxChars) { toast("中継サーバーが古いため、添付を送れません。"); return preparingQueue; }
+  const room = ATTACH.perMessage - state.draft.length - state.preparing;
+  if (room <= 0 || files.length > room) toast(`添付は 1 回に ${ATTACH.perMessage} 個までです。`);
+  const picked = files.slice(0, Math.max(0, room));
+  if (!picked.length) return preparingQueue;
+  state.preparing += picked.length;
+  renderTray();
+  const epoch = draftEpoch;
+  preparingQueue = preparingQueue.then(() => prepareAll(picked, maxChars, epoch));
+  return preparingQueue;
+}
+
+async function prepareAll(picked, maxChars, epoch) {
+  for (const file of picked) {
+    try {
+      // A new chat or a sign-out since the pick: nothing more is read.
+      if (epoch !== draftEpoch) continue;
+      const attachment = await prepare(file, maxChars);
+      const problem = epoch !== draftEpoch ? "" : draftProblem(attachment, maxChars);
+      if (problem !== null) { release(attachment); if (problem) toast(problem); } else state.draft.push(attachment);
+    } catch (error) {
+      toast(error instanceof AttachError ? error.message : "添付を読み込めませんでした。");
+    } finally {
+      state.preparing--;
+      renderTray();
+    }
+  }
+}
+
+function clearDraft() {
+  draftEpoch++;
+  state.draft.forEach(release);
+  state.draft = [];
+  renderTray();
+}
+
+function removeFromDraft(attachment) {
+  state.draft = state.draft.filter((item) => item !== attachment);
+  release(attachment);
+  renderTray();
+  if (!matchMedia("(pointer: coarse)").matches) $("input").focus();
+}
+
+/** The draft's attachments above the bar, each with its ×, as in the app. */
+const trayItems = new WeakMap();
+
+function renderTray() {
+  const tray = $("tray");
+  // Items already shown stay where they are (not put in again), so only a new one comes in.
+  const wanted = state.draft.map((attachment) => {
+    if (trayItems.has(attachment)) return trayItems.get(attachment);
+    const item = h("div", { class: `tray-item${showsAsPicture(attachment) ? " picture" : " file"}` });
+    trayItems.set(attachment, item);
+    if (showsAsPicture(attachment)) {
+      item.append(h("img", { src: attachment.thumb, alt: "", draggable: "false" }));
+      if (attachment.kind === "video") item.append(h("span", { class: "play small" }, icon("play")));
+    } else {
+      item.append(icon(fileIcon(attachment)), h("span", { class: "tray-name", text: attachment.name }));
+    }
+    item.setAttribute("title", attachment.name);
+    item.append(h("button", { type: "button", class: "tray-remove", "aria-label": `添付を外す: ${attachment.name}`, onclick: () => removeFromDraft(attachment) }, removeMark()));
+    return item;
+  });
+  for (const child of [...tray.children]) if (!wanted.includes(child)) child.remove();
+  wanted.forEach((item, index) => { if (tray.children[index] !== item) tray.insertBefore(item, tray.children[index] ?? null); });
+  tray.hidden = state.draft.length === 0;
+  tray.parentElement.classList.toggle("has-tray", !tray.hidden);
+  $("tray-status").hidden = state.preparing === 0;
+  updateComposer();
+}
+
+function wireAttachments() {
+  const menu = $("attach-menu");
+  const button = $("attach");
+  const close = () => {
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  };
+  button.addEventListener("click", () => {
+    if (!menu.hidden) { close(); return; }
+    const full = state.draft.length + state.preparing >= ATTACH.perMessage;
+    for (const item of menu.querySelectorAll("[data-pick]")) item.disabled = !!state.streaming || state.preparing > 0 || full;
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    menu.querySelector("[data-pick]:not(:disabled)")?.focus({ preventScroll: true });
+  });
+  for (const item of menu.querySelectorAll("[data-pick]")) {
+    const input = $(`pick-${item.dataset.pick}`);
+    input.accept = ACCEPT[item.dataset.pick];
+    item.addEventListener("click", () => { close(); input.click(); });
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files ?? []);
+      input.value = "";
+      addFiles(files);
+    });
+  }
+  document.addEventListener("pointerdown", (event) => {
+    if (!menu.hidden && !menu.contains(event.target) && !button.contains(event.target)) close();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) { close(); button.focus(); }
+  });
+  // A pasted screenshot or file; text pastes as text.
+  $("input").addEventListener("paste", (event) => {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (!files.length) return;
+    if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+    addFiles(files);
+  });
+  // Files dropped anywhere on the chat.
+  const chat = $("chat");
+  let depth = 0;
+  const carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  chat.addEventListener("dragenter", (event) => { if (carriesFiles(event)) { depth++; chat.classList.add("dropping"); } });
+  chat.addEventListener("dragleave", (event) => { if (carriesFiles(event) && --depth <= 0) { depth = 0; chat.classList.remove("dropping"); } });
+  chat.addEventListener("dragover", (event) => { if (carriesFiles(event)) event.preventDefault(); });
+  chat.addEventListener("drop", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    depth = 0;
+    chat.classList.remove("dropping");
+    addFiles(event.dataTransfer.files);
+  });
+  $("viewer").addEventListener("close", () => $("viewer-body").replaceChildren());
 }
 
 function captionFor(message) {
@@ -465,15 +736,23 @@ function isLast(message) {
   return list[list.length - 1] === message;
 }
 
-/** The conversation as the relay takes it: user and assistant in turn, the user's last. */
-function contextTurns(messages) {
+/**
+ * The conversation as the relay takes it: user and assistant in turn, the
+ * user's last. Attachments go newest first, as far as one request may
+ * carry; older ones (or ones this page no longer holds) are named instead.
+ */
+function contextTurns(messages, maxChars = attachChars()) {
   const turns = [];
   for (const message of messages) {
     const text = message.text ?? "";
     if (message.role === "user") {
       const last = turns[turns.length - 1];
-      if (last?.role === "user") last.content += `\n\n${text}`;
-      else turns.push({ role: "user", content: text });
+      if (last?.role === "user") {
+        last.content = last.content && text ? `${last.content}\n\n${text}` : last.content || text;
+        last.files.push(...(message.attachments ?? []));
+      } else {
+        turns.push({ role: "user", content: text, files: [...(message.attachments ?? [])] });
+      }
     } else if (text.trim() && turns[turns.length - 1]?.role === "user") {
       turns.push({ role: "assistant", content: text });
     }
@@ -481,6 +760,28 @@ function contextTurns(messages) {
   while (turns.length && turns[turns.length - 1].role !== "user") turns.pop();
   const total = () => turns.reduce((sum, turn) => sum + bytes(turn.content), 0);
   while (turns.length > 1 && (turns.length > MAX_TURNS || total() > MAX_TOTAL_BYTES)) turns.splice(0, 2);
+  const used = { chars: 0, images: 0, documents: 0, textBytes: 0 };
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index];
+    if (turn.role !== "user") continue;
+    const files = turn.files;
+    delete turn.files;
+    const sent = [];
+    const left = [];
+    for (const file of files) {
+      const fits = !!file.parts && used.chars + file.chars <= maxChars && used.images + file.images <= ATTACH.images &&
+        used.documents + file.documents <= ATTACH.documents && used.textBytes + file.textBytes <= ATTACH.textBytes &&
+        sent.length + file.parts.length <= ATTACH.partsPerMessage;
+      if (!fits) { left.push(file); continue; }
+      for (const key of Object.keys(used)) used[key] += file[key];
+      sent.push(...file.parts);
+    }
+    if (sent.length) turn.attachments = sent;
+    if (left.length) {
+      const note = `（前に添付した${left.map((file) => `「${file.name}」`).join("")}は、今回は送っていません）`;
+      turn.content = turn.content ? `${turn.content}\n\n${note}` : note;
+    }
+  }
   return turns;
 }
 
@@ -493,7 +794,7 @@ function updateComposer() {
   $("composer").classList.toggle("streaming", streaming);
   send.setAttribute("aria-label", streaming ? "停止" : "送信");
   const blocked = state.status && !state.status.available;
-  send.disabled = streaming ? false : !input.value.trim() || blocked;
+  send.disabled = streaming ? false : (!input.value.trim() && !state.draft.length) || state.preparing > 0 || blocked;
 }
 
 function autoGrow() {
@@ -506,12 +807,18 @@ async function sendFromComposer() {
   if (state.streaming) { stop(); return; }
   const input = $("input");
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !state.draft.length) return;
+  if (state.preparing) { toast("添付の読み込みが終わるまでお待ちください。"); return; }
   if (bytes(text) > MAX_TURN_BYTES) { toast("メッセージが長すぎます。分けて送ってください。"); return; }
   if (state.status && !state.status.available) { updateBanner(); return; }
   input.value = "";
   autoGrow();
   const message = { role: "user", text };
+  if (state.draft.length) {
+    message.attachments = state.draft;
+    state.draft = [];
+    renderTray();
+  }
   state.chat.messages.push(message);
   $("messages").append(messageElement(message));
   $("empty").hidden = true;
@@ -620,6 +927,10 @@ async function ask() {
         const shown = $("messages").lastElementChild;
         if (shown?.classList.contains("user")) shown.remove();
         $("input").value = last.text;
+        if (last.attachments?.length) {
+          state.draft = last.attachments.filter((attachment) => attachment.parts);
+          renderTray();
+        }
       }
       state.streaming = null;
       updateComposer();
@@ -719,7 +1030,7 @@ function renderModelSheet() {
   const list = $("model-list");
   list.replaceChildren(...catalog().map((model) => {
     const level = model.id === current.id ? currentEffort
-      : (model.efforts.includes(state.prefs.efforts[model.id]) ? state.prefs.efforts[model.id] : model.id === TOP.model ? TOP.effort : model.defaultEffort);
+      : (model.efforts.includes(state.prefs.efforts[model.id]) ? state.prefs.efforts[model.id] : startEffort(model));
     const top = model.id === TOP.model && level === TOP.effort;
     const sub = model.available === false ? "今は Anthropic で使えません"
       : model.available === null ? `推論レベル ${EFFORT[level]?.title ?? level}${top ? " · Fieluaの最上級" : ""} · 使えるか確かめられていません`
@@ -734,7 +1045,7 @@ function renderModelSheet() {
   efforts.replaceChildren(...EFFORTS.map((level) => {
     const offered = current.efforts.includes(level);
     const title = h("span", { class: "title" }, EFFORT[level].title,
-      current.defaultEffort === level ? h("span", { class: "tag", text: "標準" }) : null,
+      startEffort(current) === level ? h("span", { class: "tag", text: "標準" }) : null,
       current.id === TOP.model && level === TOP.effort ? h("span", { class: "tag top", text: "Fieluaの最上級" }) : null);
     return h("button", {
       type: "button", class: "choice", role: "radio", "aria-checked": level === currentEffort ? "true" : "false",
@@ -886,7 +1197,8 @@ async function renderSettings() {
       h("button", { type: "button", class: "secondary danger", text: "登録を解除", onclick: leave }))));
   items.push(h("p", { class: "section-label", text: "送られる内容" }));
   items.push(h("div", { class: "card" },
-    h("p", { text: "書いたメッセージと、この会話のこれまでのやり取りが、Fielua の中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。写真やファイルは送りません。" }),
+    h("p", { text: "書いたメッセージと添付、この会話のこれまでのやり取りが、Fielua の中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
+    h("p", { class: "muted", text: "写真は小さくし、位置情報などを消してから送ります。動画は音声を送らず、いくつかの場面の静止画にします。PDF とテキストはそのまま送ります。" }),
     h("p", { class: "muted", text: "中継サーバーは会話を保存しません。会話はこのタブの中だけにあり、タブを閉じるかログアウトすると消えます。Anthropic は API の利用データを Anthropic の方針に沿って一定期間保持します。答えには誤りが含まれることがあります。" })));
   if ((status?.role ?? me?.role) === "developer") items.push(...await developerSection());
   body.replaceChildren(...items);
@@ -989,6 +1301,7 @@ async function logout() {
   const token = session.get()?.token;
   session.clear();
   forgetChat();
+  clearDraft();
   if (token) call("/web/logout", { method: "POST", body: {}, token }).catch(() => {});
   closeSheets();
   showLogin("main", "ログアウトしました。");
@@ -1009,6 +1322,7 @@ async function leave() {
   }
   session.clear();
   forgetChat();
+  clearDraft();
   closeSheets();
   showLogin("main", "登録を解除しました。");
 }
@@ -1058,9 +1372,10 @@ function wireComposer() {
     sendFromComposer();
   });
   $("new-chat").addEventListener("click", async () => {
-    if (!state.chat.messages.length) return;
+    if (!state.chat.messages.length && !state.draft.length) return;
     stop();
     forgetChat();
+    clearDraft();
     renderThread();
     updateComposer();
     if (!coarse) input.focus();
@@ -1074,6 +1389,7 @@ function start() {
   }
   wireLogin();
   wireComposer();
+  wireAttachments();
   wireSheets();
   wireScroller();
   wireViewport();

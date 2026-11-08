@@ -102,7 +102,9 @@ const anthropic = createServer((req, res) => {
   req.on("end", () => {
     const body = JSON.parse(data);
     upstream.requests.push({ headers: req.headers, body });
-    const question = body.messages.at(-1).content.trim();
+    const lastContent = body.messages.at(-1).content;
+    // A message with attachments: its text is the last block.
+    const question = (typeof lastContent === "string" ? lastContent : (lastContent.filter((b) => b.type === "text").at(-1)?.text ?? "")).trim();
     if (question === "billing") {
       res.writeHead(402, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "billing_error", message: "Your credit balance is too low." } }));
@@ -115,6 +117,10 @@ const anthropic = createServer((req, res) => {
     if (question === "md") reply = MD;
     if (question === "long") { reply = LONG; pieceSize = 200; }
     if (question === "slow") { reply = "ゆっくり答えます。".repeat(200); pieceSize = 3; every = 60; }
+    if (question === "添付") {
+      const blocks = body.messages.filter((m) => Array.isArray(m.content)).flatMap((m) => m.content).map((b) => b.type === "text" ? "text" : `${b.type}:${b.source.media_type}`);
+      reply = `blocks=${blocks.join(",")}`;
+    }
     if (question === "echo") {
       reply = `model=${body.model} effort=${body.output_config?.effort} max=${body.max_tokens} turns=${body.messages.length} thinking=${body.thinking?.type}`;
       usage = { input_tokens: 200000, output_tokens: 100000 };
@@ -292,7 +298,7 @@ try {
   const storage = await dev.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
   check("the web session is in this tab only", /"token":"fws_/.test(storage.session["fielua.session"] ?? "") && !JSON.stringify(storage.local).includes("fws_"));
   check("no key is kept anywhere in the browser", !JSON.stringify(storage).includes(ADMIN) && !JSON.stringify(storage).includes("sk-ant"));
-  check("Fielua's top is chosen at first: Claude Opus 5.5 at 超高", (await dev.textContent("#model-name")) === "Claude Opus 5.5" && (await dev.textContent("#model-sub")).includes("超高"));
+  check("Claude Opus 5.5 at 中 at first", (await dev.textContent("#model-name")) === "Claude Opus 5.5" && (await dev.textContent("#model-sub")).includes("推論 中"));
 
   // MARK: Markdown, streamed
   await sendMessage(dev, "md");
@@ -352,11 +358,11 @@ try {
   check("rule", md.hr === 1);
   check("the chunks above the one being written are never redrawn", md.firstKept);
   check("the view followed the reply to its end", md.maxGap < 200, `largest gap ${md.maxGap}px`);
-  check("the caption says who answered at which level", md.caption === "Claude Opus 5.5 · 推論 超高", md.caption);
+  check("the caption says who answered at which level", md.caption === "Claude Opus 5.5 · 推論 中", md.caption);
   check("no Content Security Policy violation", md.csp.length === 0, md.csp.join(" | "));
   check("nothing runs wider than the iPhone's screen", md.overflow <= 0, `${md.overflow}px`);
   const sent = upstream.requests.at(-1).body;
-  check("the relay asked for Opus 5.5 at xhigh with 64,000 tokens and adaptive thinking", sent.model === "claude-opus-5-5" && sent.output_config?.effort === "xhigh" && sent.max_tokens === 64000 && sent.thinking?.type === "adaptive");
+  check("the relay asked for Opus 5.5 at medium with 32,000 tokens and adaptive thinking", sent.model === "claude-opus-5-5" && sent.output_config?.effort === "medium" && sent.max_tokens === 32000 && sent.thinking?.type === "adaptive");
   // The SDK sends the key as a bearer token.
   check("Anthropic got the relay's own key, which the page never had", upstream.requests.at(-1).headers.authorization === "Bearer sk-ant-e2e-stand-in");
   await dev.screenshot({ path: join(SHOTS, "check-markdown.png"), fullPage: false });
@@ -389,7 +395,8 @@ try {
   }));
   check("models in Fielua's order, Opus 5.5 first", sheet.models.map((m) => m.name).join(",") === "Claude Opus 5.5,Claude Fable 5.1,Claude Sonnet 5.5,Claude Haiku 5.5");
   check("a model Anthropic doesn't offer can't be chosen", sheet.models[3].disabled && !sheet.models[0].disabled);
-  check("Opus 5.5 at 超高 is marked Fielua's top", sheet.efforts[3].title.includes("超高") && sheet.efforts[3].title.includes("Fieluaの最上級") && sheet.efforts[3].checked === "true");
+  check("中 is chosen and marked 標準; 超高 is marked Fielua's top", sheet.efforts[1].checked === "true" && sheet.efforts[1].title.includes("標準") &&
+    sheet.efforts[3].title.includes("超高") && sheet.efforts[3].title.includes("Fieluaの最上級"), JSON.stringify(sheet.efforts));
   check("no max level", sheet.efforts.length === 4 && !sheet.efforts.some((e) => /max|最大/.test(e.title)));
   await sleep(450);
   await dev.screenshot({ path: join(SHOTS, "check-model-sheet.png") });
@@ -443,6 +450,130 @@ try {
   await sendMessage(dev, "overload");
   await waitReply(dev);
   check("a reply broken off says so and keeps what came", (await lastReply(dev).locator(".notice").textContent()).includes("混み合っている"));
+
+  // MARK: Photos, a video and files, as the iPhone app attaches them
+  // A large photo with its location in it (an Exif block), made in the browser.
+  const madeJPEG = await dev.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 3000;
+    canvas.height = 2000;
+    const context = canvas.getContext("2d");
+    const gradient = context.createLinearGradient(0, 0, 3000, 2000);
+    gradient.addColorStop(0, "#f6c945");
+    gradient.addColorStop(1, "#3a7bd5");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 3000, 2000);
+    context.fillStyle = "#000";
+    context.font = "200px sans-serif";
+    context.fillText("Fielua", 400, 1000);
+    return canvas.toDataURL("image/jpeg", 0.92).split(",")[1];
+  });
+  const plain = Buffer.from(madeJPEG, "base64");
+  const tiff = Buffer.from("Exif\0\0II*\0\x08\0\0\0\0\0GPSLatitude 35.6812 N GPSLongitude 139.7671 E", "binary");
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, (tiff.length + 2) >> 8, (tiff.length + 2) & 0xff]), tiff]);
+  const located = Buffer.concat([plain.subarray(0, 2), app1, plain.subarray(2)]);
+  const pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n", "latin1");
+  // 「こんにちは、Fielua」 in Shift_JIS, as Windows' Notepad saves Japanese text.
+  const sjis = Buffer.from([0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd, 0x81, 0x41, 0x46, 0x69, 0x65, 0x6c, 0x75, 0x61]);
+
+  await dev.click("#attach");
+  const menu = await dev.evaluate(() => Array.from(document.querySelectorAll("#attach-menu [data-pick]")).map((b) => b.textContent.trim()));
+  check("the plus opens 写真, ファイル and 動画, in the app's order", menu.join(",") === "写真,ファイル,動画", menu.join(","));
+  await sleep(400);
+  check("the menu opens above the plus", await dev.isVisible("#attach-menu [data-pick=photos]"));
+  await dev.screenshot({ path: join(SHOTS, "check-attach-menu.png") });
+  await dev.keyboard.press("Escape");
+  check("the menu closes", await dev.isHidden("#attach-menu"));
+
+  await dev.setInputFiles("#pick-photos", [
+    { name: "東京駅.jpg", mimeType: "image/jpeg", buffer: located },
+    { name: "flower.png", mimeType: "image/png", buffer: readFileSync(join(root, "src/assets/flower.png")) },
+  ]);
+  await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item.picture").length === 2, null, { timeout: 10000 });
+  check("picked photos wait above the bar, each with its ×", await dev.locator("#tray .tray-remove").count() === 2);
+  check("a photo alone can be sent", !(await dev.isDisabled("#send")));
+  await dev.locator("#tray .tray-remove").nth(1).click();
+  check("× takes one off", await dev.locator("#tray .tray-item").count() === 1);
+  await dev.setInputFiles("#pick-files", [
+    { name: "教材.pdf", mimeType: "application/pdf", buffer: pdfBytes },
+    { name: "メモ.txt", mimeType: "text/plain", buffer: sjis },
+  ]);
+  await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item.file").length === 2, null, { timeout: 10000 });
+  await dev.setInputFiles("#pick-videos", [{ name: "海.webm", mimeType: "video/webm", buffer: readFileSync(join(root, "test/fixtures/clip.webm")) }]);
+  await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item.picture").length === 2, null, { timeout: 20000 });
+  check("a video waits as its first scene, marked to play", await dev.locator("#tray .tray-item .play").count() === 1);
+  await dev.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["dropped words"], "落とした.md", { type: "text/markdown" }));
+    document.getElementById("chat").dispatchEvent(new DragEvent("drop", { dataTransfer: data, bubbles: true, cancelable: true }));
+  });
+  await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item").length === 5, null, { timeout: 5000 });
+  check("a file dropped on the chat is attached too", true);
+  await dev.setInputFiles("#pick-files", [{ name: "報告.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from("PK\x03\x04", "binary") }]);
+  await dev.waitForSelector("#toast:not([hidden])");
+  check("a Word file is refused with what to do", (await dev.textContent("#toast")).includes("PDF に書き出して"), await dev.textContent("#toast"));
+  const bigPDF = Buffer.concat([pdfBytes, Buffer.alloc(2_400_000, 0x20)]);
+  await dev.setInputFiles("#pick-files", [{ name: "厚い教材.pdf", mimeType: "application/pdf", buffer: bigPDF }]);
+  await dev.waitForFunction(() => document.getElementById("toast").textContent.includes("厚い教材"), null, { timeout: 5000 });
+  check("a PDF over what one request carries is refused before sending", (await dev.textContent("#toast")).includes("2.2 MB まで"), await dev.textContent("#toast"));
+  check("still five waiting", await dev.locator("#tray .tray-item").count() === 5);
+  await dev.evaluate(() => { document.getElementById("toast").hidden = true; });
+  await dev.screenshot({ path: join(SHOTS, "check-attach-tray.png") });
+
+  await sendMessage(dev, "添付");
+  await waitReply(dev);
+  const withFiles = upstream.requests.at(-1).body;
+  const sentBlocks = withFiles.messages.at(-1).content;
+  const images = sentBlocks.filter((b) => b.type === "image");
+  const photoBytes = Buffer.from(images[0].source.data, "base64");
+  // The JPEG's frame header (SOF0) holds its height and width.
+  const sof = photoBytes.indexOf(Buffer.from([0xff, 0xc0]));
+  const dims = sof > 0 ? { height: photoBytes.readUInt16BE(sof + 5), width: photoBytes.readUInt16BE(sof + 7) } : {};
+  check("the photo goes smaller: 1568 on its long edge", dims.width === 1568 && dims.height === 1045, JSON.stringify(dims));
+  check("and without its location (no Exif)", !photoBytes.includes(Buffer.from("Exif")) && !photoBytes.includes(Buffer.from("GPS")));
+  const captions = sentBlocks.filter((b) => b.type === "text").map((b) => b.text);
+  check("the video goes as 4 scenes, each with its time, said to be without sound", images.length === 5 && captions.filter((c) => c.includes("海.webm")).length === 4 &&
+    captions[0].includes("音声なし") && captions[0].includes("4 場面") && captions.some((c) => c.includes("0:11 の場面")), captions.join(" | "));
+  const docs = sentBlocks.filter((b) => b.type === "document");
+  check("the PDF goes as itself, with its name", docs[0]?.source.media_type === "application/pdf" && docs[0].title === "教材.pdf" && Buffer.from(docs[0].source.data, "base64").equals(pdfBytes));
+  check("a Shift_JIS text file is read as Japanese", docs[1]?.source.media_type === "text/plain" && docs[1].source.data === "こんにちは、Fielua" && docs[1].title === "メモ.txt", docs[1]?.source.data);
+  check("the dropped file too, and the question last", docs[2]?.title === "落とした.md" && sentBlocks.at(-1).text === "添付");
+  check("the tray empties once sent", await dev.isHidden("#tray"));
+  const bubble = await dev.evaluate(() => {
+    const message = [...document.querySelectorAll(".msg.user")].at(-1);
+    return {
+      pictures: message.querySelectorAll(".sent-picture").length,
+      play: message.querySelectorAll(".sent-picture .play").length,
+      duration: message.querySelector(".sent-picture .duration")?.textContent,
+      note: message.querySelector(".sent-note")?.textContent,
+      files: [...message.querySelectorAll(".bubble .file-name")].map((e) => e.textContent),
+      text: message.querySelector(".bubble-text")?.textContent,
+      firstInBubble: !!message.querySelector(".bubble .sent-picture"),
+    };
+  });
+  check("sent photos and the video stand on their own above the bubble", bubble.pictures === 2 && !bubble.firstInBubble && bubble.play === 1 && bubble.duration === "0:12", JSON.stringify(bubble));
+  check("with how the video was sent", bubble.note === "音声なし・4 場面", bubble.note);
+  check("files sit in the bubble with the text", bubble.files.join(",") === "教材.pdf,メモ.txt,落とした.md" && bubble.text === "添付", JSON.stringify(bubble));
+  await dev.locator(".msg.user .sent-picture").first().click();
+  await dev.waitForSelector("#viewer[open] img");
+  check("a sent photo opens larger", (await dev.getAttribute("#viewer-body img", "src")).startsWith("data:image/jpeg;base64,"));
+  await dev.click("#viewer [data-close]");
+  await dev.locator(".msg.user .sent-picture").nth(0).scrollIntoViewIfNeeded();
+  await dev.screenshot({ path: join(SHOTS, "check-attach-sent.png") });
+
+  await sendMessage(dev, "続き");
+  await waitReply(dev);
+  const follow = upstream.requests.at(-1).body.messages;
+  check("the next question carries them again (the conversation so far)", follow.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "image")));
+  await dev.reload();
+  await dev.waitForSelector("#chat:not([hidden])");
+  check("after reloading, the photos still show (pictures only)", await dev.locator(".msg.user .sent-picture img").count() === 2);
+  await sendMessage(dev, "もう一度");
+  await waitReply(dev);
+  const reloaded = upstream.requests.at(-1).body.messages;
+  const named = reloaded.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n");
+  check("then, Claude is told they were attached but are not sent again", named.includes("「東京駅.jpg」") && named.includes("今回は送っていません") && !reloaded.some((m) => Array.isArray(m.content)), named.slice(-200));
+  check("nothing of the attachments' data is kept in the tab", !(await dev.evaluate(() => sessionStorage.getItem("fielua.chat"))).includes(images[0].source.data.slice(2000, 2060)));
 
   // MARK: A friend
   await dev.click("#settings-button");
@@ -555,6 +686,31 @@ try {
         await page.click("#credit");
         await sleep(500);
         await page.screenshot({ path: join(PEOPLE, "iphone-credit.png") });
+      }
+      await context.close();
+    }
+    // The attachments: a sent photo, video and files, and two more waiting above the bar.
+    const full = JSON.parse(saved.chat);
+    const at = full.messages.findIndex((m) => m.attachments?.length);
+    for (const scheme of ["light", "dark"]) {
+      const context = await browser.newContext({ viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: scheme });
+      await context.addInitScript(([session, conversation]) => {
+        sessionStorage.setItem("fielua.session", session);
+        sessionStorage.setItem("fielua.chat", conversation);
+      }, [saved.session, JSON.stringify({ messages: full.messages.slice(at, at + 2).map((m) => (m.role === "assistant" ? { ...m, text: "写真と動画、PDF、メモを受け取りました。" } : m)) })]);
+      const page = await context.newPage();
+      await page.goto(page0);
+      await page.waitForSelector(".msg.user .sent-picture img");
+      await page.setInputFiles("#pick-photos", [{ name: "東京駅.jpg", mimeType: "image/jpeg", buffer: located }]);
+      await page.setInputFiles("#pick-files", [{ name: "教材.pdf", mimeType: "application/pdf", buffer: pdfBytes }]);
+      await page.waitForFunction(() => document.querySelectorAll("#tray .tray-item").length === 2);
+      await page.fill("#input", "この写真の場所はどこ？");
+      await sleep(400);
+      await page.screenshot({ path: join(PEOPLE, `iphone-attachments-${scheme}.png`) });
+      if (scheme === "light") {
+        await page.click("#attach");
+        await sleep(400);
+        await page.screenshot({ path: join(PEOPLE, "iphone-attach-menu.png") });
       }
       await context.close();
     }

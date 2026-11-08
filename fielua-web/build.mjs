@@ -86,7 +86,9 @@ const csp = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self' data:",
+  // Attachments: photos and videos are read on the page from the person's own files.
+  "img-src 'self' data: blob:",
+  "media-src blob:",
   "font-src 'self'",
   `connect-src ${relayOrigin}`,
   "manifest-src 'self'",

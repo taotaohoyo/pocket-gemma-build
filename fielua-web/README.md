@@ -6,7 +6,8 @@ https://suelira.com/chat/ に置く、Fielua の Web 版です。iPhone の Safa
 - Claude とは、このリポジトリの中継サーバー（`../claude-relay/`、Cloudflare Workers）を通して話します。Anthropic の API キーは中継サーバーのシークレットにだけあり、ページには一切入りません。
 - ログインはパスキー（Face ID、Touch ID、Windows Hello など）です。中継サーバーが検証し、12 時間だけ使えるセッションをこのタブの中（sessionStorage）にだけ置きます。Cookie は使いません。
 - Markdown は iPhone の Fielua と同じ規則で表示します（`src/mdsource.js` は PocketCore の MarkdownSource、`src/highlight.js` は SyntaxHighlighter、`src/stream.js` の Pacer は ReplyPacer の移植）。表示は markdown-it、無害化は DOMPurify、数式は KaTeX です。
-- ページの Content Security Policy は、自分のファイルの読み込みと、中継サーバーへの通信だけを許します。
+- 写真・動画・ファイルを添付できます（`src/attach.js`、入力欄の ＋）。写真は長い辺 1568 ピクセルの JPEG にして位置情報などを消し、動画は音声なしの静止画数枚（長さに応じて 3〜8 場面）にします。PDF とテキスト（UTF-8 と Shift_JIS）はそのまま送ります。1 回に送れる量は中継サーバーが `/v1/status` の `attachments.bytes` で知らせます（無料プランでは約 2.2 MB）。添付の中身はページの中だけにあり、タブの保存領域には小さな絵と名前だけを置きます。
+- ページの Content Security Policy は、自分のファイルの読み込み（添付は `blob:` と `data:`）と、中継サーバーへの通信だけを許します。
 
 ## 作り方
 
