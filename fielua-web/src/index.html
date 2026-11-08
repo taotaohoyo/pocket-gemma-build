@@ -70,9 +70,45 @@
 
 <!-- The chat -->
 <div id="chat" class="chat" hidden>
+  <!-- 会話一覧: under the chat on a phone (the chat slides aside), beside it on a wide screen (the iPhone app's history) -->
+  <div id="history" class="history" role="complementary" aria-labelledby="history-title" inert>
+    <h2 id="history-title" class="visually-hidden">会話一覧</h2>
+    <div class="history-head">
+      <div class="history-lockup" id="history-lockup">
+        <img src="assets/flower.png" alt="" width="28" height="28">
+        <span class="history-wordmark">Fielua</span>
+      </div>
+      <div class="history-search" id="history-search" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4.5 4.5"/></svg>
+        <input type="search" id="history-query" placeholder="会話を検索" aria-label="会話を検索" enterkeyhint="search" autocomplete="off" spellcheck="false">
+      </div>
+      <button type="button" id="history-search-button" class="glass-circle" aria-label="会話を検索" aria-controls="history-search" aria-expanded="false">
+        <svg class="magnifier" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4.5 4.5"/></svg>
+        <svg class="close-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>
+      </button>
+    </div>
+    <div class="history-scroll" id="history-scroll">
+      <ul id="history-list" class="history-list" aria-labelledby="history-title"></ul>
+      <p id="history-empty" class="history-empty" hidden></p>
+    </div>
+    <div class="history-foot">
+      <button type="button" id="history-new" class="history-new" aria-label="新しいチャット">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/><path d="M17.6 3.9a1.9 1.9 0 0 1 2.7 2.7L12.6 14.3l-3.4.7.7-3.4Z"/></svg>
+        <span>チャット</span>
+      </button>
+      <button type="button" id="history-settings" class="glass-circle big" aria-label="設定を開く" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.4A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4Z"/></svg>
+      </button>
+    </div>
+    <div id="history-menu" class="row-menu" role="menu" aria-label="会話" hidden>
+      <button type="button" role="menuitem" id="history-delete" class="danger"><span>削除</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l.8 12.5h8.4L17 7"/><path d="M10.5 11v5M13.5 11v5"/></svg></button>
+    </div>
+  </div>
+
+  <div id="chat-panel" class="chat-panel">
   <header class="topbar">
-    <button type="button" id="new-chat" class="icon-button" aria-label="新しい会話">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4.5L19.3 9.2a2.1 2.1 0 0 0 0-3L17.8 4.7a2.1 2.1 0 0 0-3 0L4 15.5V20Z"/><path d="M13.5 6 18 10.5"/></svg>
+    <button type="button" id="history-button" class="icon-button history-button" aria-label="会話一覧を開く" aria-controls="history" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.2h15.2M4.5 14.8h9.6"/></svg>
     </button>
     <button type="button" id="model-button" class="model-button" aria-haspopup="dialog" aria-label="モデルと推論レベル">
       <span class="model-line"><svg class="cloud" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.2a4 4 0 0 0 .5-8A5.5 5.5 0 0 0 7.1 9a4.75 4.75 0 0 0-.1 9.5Z"/></svg><span id="model-name">Claude</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></span>
@@ -111,6 +147,8 @@
         <div id="attach-menu-gap" class="menu-gap" role="separator" hidden></div>
         <button type="button" role="menuitemcheckbox" aria-checked="false" data-tool="webSearch" hidden><svg class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5.5 12.5 4 4 9-9"/></svg><span>ウェブ検索</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17Z"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z"/></svg></button>
         <button type="button" role="menuitemcheckbox" aria-checked="false" data-tool="files" hidden><svg class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5.5 12.5 4 4 9-9"/></svg><span>ファイル作成</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h6.5L18 8v12.5H7Z"/><path d="M13.5 3.5V8H18"/><path d="M12.5 11v6M9.5 14h6"/></svg></button>
+        <div class="menu-gap" role="separator"></div>
+        <button type="button" role="menuitem" id="menu-new-chat"><span>新しいチャット</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/><path d="M17.6 3.9a1.9 1.9 0 0 1 2.7 2.7L12.6 14.3l-3.4.7.7-3.4Z"/></svg></button>
       </div>
       <div id="tool-pills" class="tool-pills"></div>
       <input type="file" id="pick-photos" multiple hidden>
@@ -128,6 +166,8 @@
     </form>
     <p class="disclosure">Anthropic の AI（Claude）が答えます。誤りを含むことがあります。</p>
   </footer>
+  </div>
+  <button type="button" id="history-close" class="history-close" aria-label="会話に戻る" tabindex="-1" hidden></button>
 </div>
 
 <!-- Model and reasoning level -->

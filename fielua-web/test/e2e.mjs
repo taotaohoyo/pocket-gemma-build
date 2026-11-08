@@ -338,6 +338,18 @@ async function waitReply(page, timeout = 20000) {
 
 const lastReply = (page) => page.locator(".msg.assistant").last();
 
+/** A finger dragged across the screen (real touch events, as on a phone; not a mouse). */
+async function swipe(page, from, to, steps = 12) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+  for (let i = 1; i <= steps; i++) {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps }] });
+    await sleep(16);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await cdp.detach();
+}
+
 // A UTF-8 locale, as people's phones and PCs have: under Linux's plain C locale Chromium saves 週末の予定.csv as "download".
 const browser = await chromium.launch({ env: { ...process.env, LANG: "C.UTF-8", LC_ALL: "C.UTF-8" } });
 try {
@@ -674,14 +686,70 @@ try {
     const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
     return (await (await fetch(`${relayURL}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).credit?.spentUSD ?? null;
   }, relay);
+  // MARK: 会話一覧 (this device only, encrypted)
   const shownBefore = await dev.locator(".msg").count();
-  await dev.click("#new-chat");
-  await dev.waitForSelector("#toast:not([hidden]) .toast-action");
-  check("a new chat can be undone for a few seconds (there is no history)", (await dev.textContent("#toast")).includes("元に戻す") && (await dev.locator(".msg").count()) === 0);
-  await dev.click("#toast .toast-action");
-  check("元に戻す brings the conversation back", (await dev.locator(".msg").count()) === shownBefore && (await dev.evaluate(() => sessionStorage.getItem("fielua.chat"))) === chatBeforeTools);
-  await dev.click("#new-chat");
-  await dev.evaluate(() => { document.getElementById("toast").hidden = true; });
+  const firstReplyText = (await dev.locator(".msg.assistant .reply").first().textContent()).replace(/\s+/g, "").slice(0, 14);
+  await dev.click("#history-button");
+  await dev.waitForSelector("#chat.history-shown .history-row");
+  await sleep(600);
+  const drawerShape = await dev.evaluate(() => ({
+    rows: [...document.querySelectorAll(".history-row")].map((row) => ({ title: row.textContent, current: row.getAttribute("aria-current") })),
+    panelX: Math.round(document.getElementById("chat-panel").getBoundingClientRect().left),
+    width: innerWidth,
+    inert: document.getElementById("chat-panel").inert,
+    focused: document.activeElement?.getAttribute("aria-current"),
+    active: `${document.activeElement?.tagName}#${document.activeElement?.id}.${document.activeElement?.className}`,
+  }));
+  check("会話一覧 opens with the conversation, named by its first question, the open one marked and focused",
+    drawerShape.rows.length === 1 && drawerShape.rows[0].title === "md" && drawerShape.rows[0].current === "true" && drawerShape.focused === "true", JSON.stringify(drawerShape));
+  check("the chat slides aside, 92 px of it left in sight, and can't be used meanwhile", drawerShape.width - drawerShape.panelX === 92 && drawerShape.inert, String(drawerShape.panelX));
+  await dev.screenshot({ path: join(SHOTS, "check-history.png") });
+  const kept = await dev.evaluate(async ([relayURL, probes]) => {
+    const names = (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith("fielua-history-"));
+    const db = await new Promise((resolve, reject) => { const r = indexedDB.open(names[0]); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+    const all = await new Promise((resolve) => {
+      const tx = db.transaction(["meta", "chats"]);
+      const out = {};
+      tx.objectStore("chats").getAll().onsuccess = (e) => { out.chats = e.target.result; };
+      tx.objectStore("meta").getAll().onsuccess = (e) => { out.meta = e.target.result; };
+      tx.oncomplete = () => resolve(out);
+    });
+    db.close();
+    const text = (records) => records.map((r) => new TextDecoder().decode(r.data)).join("");
+    const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
+    const response = await fetch(`${relayURL}/v1/history-key`, { headers: { Authorization: `Bearer ${token}` } });
+    const { key } = await response.json();
+    const plain = text(all.chats) + text(all.meta);
+    const storages = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
+    const records = [...all.chats, ...all.meta];
+    const shaped = records.every((r) => r.iv instanceof Uint8Array && r.iv.length === 12 && r.data instanceof Uint8Array && r.data.length >= 16);
+    // And it opens with this person's key from the relay (AES-GCM, bound to its store and id).
+    const raw = Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    const aes = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+    const record = all.chats[0];
+    const opened = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: record.iv, additionalData: new TextEncoder().encode(`fielua-history-v1:chats:${record.id}`) }, aes, record.data));
+    return {
+      names, chats: all.chats.length, meta: all.meta.length, shaped, readable: probes.filter((probe) => plain.includes(probe)),
+      opens: probes.filter((probe) => !probe.startsWith('"')).every((probe) => opened.includes(probe)), keyFound: storages.includes(key) || plain.includes(key), keyLength: key.length, cache: response.headers.get("cache-control"),
+    };
+  }, [relay, ["東京駅.jpg", "教材.pdf", "もう一度", "東京の週末プラン", "\"title\"", "\"messages\""]]);
+  check("the history stays in this browser, encrypted: no question, reply, file name or key readable in its storage",
+    kept.names.length === 1 && kept.chats === 1 && kept.meta === 1 && kept.shaped && kept.readable.length === 0 && kept.opens && !kept.keyFound && kept.keyLength === 43,
+    JSON.stringify(kept));
+  await dev.click("#history-new");
+  await sleep(600);
+  check("チャット starts a new chat, the list goes, and the one before stays in it",
+    (await dev.locator(".msg").count()) === 0 && !(await dev.evaluate(() => document.getElementById("chat").classList.contains("history-shown"))) && (await dev.evaluate(() => sessionStorage.getItem("fielua.chat"))) !== chatBeforeTools);
+  // A finger, not a click: a sideways swipe opens the list, and one back from the strip closes it.
+  const panelAt = () => dev.evaluate(() => ({ shown: document.getElementById("chat").classList.contains("history-shown"), x: Math.round(document.getElementById("chat-panel").getBoundingClientRect().left), inert: document.getElementById("chat-panel").inert }));
+  await swipe(dev, { x: 30, y: 420 }, { x: 330, y: 430 });
+  await sleep(600);
+  const swipedOpen = await panelAt();
+  await swipe(dev, { x: 370, y: 420 }, { x: 60, y: 430 });
+  await sleep(600);
+  const swipedShut = await panelAt();
+  check("a sideways swipe opens the list, and a swipe back on the strip closes it (touch)",
+    swipedOpen.shown && swipedOpen.x === 298 && swipedOpen.inert && !swipedShut.shown && swipedShut.x === 0 && !swipedShut.inert, JSON.stringify({ swipedOpen, swipedShut }));
   await dev.click("#attach");
   await dev.waitForSelector("#attach-menu:not([hidden])");
   const toolRows = await dev.evaluate(() => [...document.querySelectorAll("#attach-menu [data-tool]")].map((row) => `${row.dataset.tool}:${row.hidden ? "hidden" : "shown"}:${row.getAttribute("aria-checked")}`));
@@ -770,6 +838,80 @@ try {
   await dev.click("#tool-pills .tool-pill");
   check("all off: the next question goes without tools", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
 
+  // The list after a reload: both conversations, the latest question first; searching their text; opening and deleting.
+  await dev.click("#history-button");
+  await dev.waitForSelector("#chat.history-shown .history-row >> nth=1");
+  const titles = await dev.locator(".history-row").allTextContents();
+  check("both conversations are listed, the one asked last first", titles.length === 2 && titles[0] === "検索" && titles[1] === "md", titles.join(" | "));
+  await dev.click("#history-search-button");
+  await dev.fill("#history-query", firstReplyText.slice(2, 8));
+  await dev.waitForFunction(() => document.querySelectorAll(".history-row").length === 1, null, { timeout: 5000 });
+  check("searching finds a conversation by what a reply said", (await dev.locator(".history-row").textContent()) === "md");
+  await dev.fill("#history-query", "存在しない言葉ですよ");
+  await dev.waitForSelector("#history-empty:not([hidden])");
+  check("nothing found: 見つかりませんでした", (await dev.textContent("#history-empty")) === "見つかりませんでした");
+  await dev.click("#history-search-button");
+  await dev.waitForFunction(() => document.querySelectorAll(".history-row").length === 2, null, { timeout: 5000 });
+  await dev.click(".history-row >> text=md");
+  await dev.waitForFunction((n) => document.querySelectorAll(".msg").length === n, shownBefore, { timeout: 5000 });
+  await sleep(600);
+  check("opening it from the list brings the conversation back as it was", !(await dev.evaluate(() => document.getElementById("chat").classList.contains("history-shown"))));
+  await dev.click("#history-button");
+  await dev.waitForSelector("#chat.history-shown .history-row[aria-current=true]");
+  await dev.click(".history-row[aria-current=true]", { button: "right" });
+  await dev.waitForSelector("#history-menu:not([hidden])");
+  await dev.click("#history-delete");
+  await dev.waitForSelector("#confirm[open]");
+  check("deleting asks first, naming the conversation", (await dev.textContent("#confirm-title")) === "この会話を削除しますか？" && (await dev.textContent("#confirm-body")).includes("md"));
+  await dev.click("#confirm-ok");
+  await dev.waitForFunction(() => document.querySelectorAll(".history-row").length === 1, null, { timeout: 5000 });
+  check("deleted, the open one gives way to a new chat and the list stays open",
+    (await dev.locator(".msg").count()) === 0 && (await dev.evaluate(() => document.getElementById("chat").classList.contains("history-shown"))));
+  await dev.click(".history-row >> text=検索");
+  await dev.waitForSelector(".msg.assistant .made-file");
+  check("the other conversation opens again, its files with it", (await dev.locator(".made-file").count()) === 4);
+
+  // MARK: Two tabs, one history
+  {
+    const tab2 = await devContext.newPage();
+    const tab2Errors = await watch(tab2);
+    await tab2.addInitScript((s) => { if (!sessionStorage.getItem("fielua.session")) sessionStorage.setItem("fielua.session", s); }, await dev.evaluate(() => sessionStorage.getItem("fielua.session")));
+    await tab2.goto(page0);
+    await tab2.waitForSelector("#chat:not([hidden])");
+    const reopened = await tab2.waitForFunction(() => document.querySelectorAll(".msg.assistant .made-file").length === 4, null, { timeout: 8000 }).then(() => true, () => false);
+    check("a second tab opens on the conversation open last", reopened);
+    const before = await dev.locator(".msg").count();
+    await sendMessage(tab2, "echo");
+    await waitReply(tab2);
+    const followed = await dev.waitForFunction((n) => document.querySelectorAll(".msg").length === n + 2, before, { timeout: 8000 }).then(() => true, () => false);
+    check("what one tab adds to a conversation shows in the other, which then can't write an older copy over it", followed, `${before} → ${await dev.locator(".msg").count()}`);
+    const staleCopy = await dev.evaluate(() => sessionStorage.getItem("fielua.chat"));
+    await tab2.click("#history-button");
+    await tab2.waitForSelector("#chat.history-shown .history-row[aria-current=true]");
+    await tab2.click(".history-row[aria-current=true]", { button: "right" });
+    await tab2.click("#history-delete");
+    await tab2.click("#confirm-ok");
+    const gone = await dev.waitForFunction(() => document.querySelectorAll(".msg").length === 0, null, { timeout: 8000 }).then(() => true, () => false);
+    check("deleted in one tab, it goes from the other too", gone);
+    // A tab that missed it (its own copy still in the tab's storage) doesn't bring it back on a reload.
+    await dev.evaluate((copy) => sessionStorage.setItem("fielua.chat", copy), staleCopy);
+    await dev.reload();
+    await dev.waitForSelector("#chat:not([hidden])");
+    await sleep(1000);
+    check("nor does a reload bring a deleted conversation back", (await dev.locator(".msg").count()) === 0 && JSON.parse(staleCopy).messages.length > 0);
+    // The 12 hours run out while the tab is away: back in view, it signs out, the list locked with it.
+    await tab2.evaluate(() => {
+      const value = JSON.parse(sessionStorage.getItem("fielua.session"));
+      value.expiresAt = Date.now() - 1000;
+      sessionStorage.setItem("fielua.session", JSON.stringify(value));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const lockedOut = await tab2.waitForSelector("#login:not([hidden])", { timeout: 5000 }).then(() => true, () => false);
+    check("a sign-in that ran out signs the page out, its history list with it", lockedOut && (await tab2.locator(".history-row").count()) === 0);
+    check("no page errors in the second tab", tab2Errors.length === 0, tab2Errors.join(" | "));
+    await tab2.close();
+  }
+
   // MARK: A long conversation
   {
     const longContext = await browser.newContext({ ...iphone });
@@ -839,7 +981,44 @@ try {
     return r.status;
   }, relay);
   check("a friend can't download the developer's files", friendDownload === 404, `status ${friendDownload}`);
+  await friend.waitForSelector(".history-row");
+  const dock = await friend.evaluate(() => ({
+    docked: document.getElementById("chat").classList.contains("docked"),
+    panel: Math.round(document.getElementById("chat-panel").getBoundingClientRect().left),
+    rows: [...document.querySelectorAll(".history-row")].map((row) => row.textContent),
+    label: document.getElementById("history-button").getAttribute("aria-label"),
+  }));
+  check("on a PC the list stands beside the chat, with the friend's own conversation only", dock.docked && dock.panel === 360 && dock.rows.join() === "こんにちは" && dock.label === "会話一覧を閉じる", JSON.stringify(dock));
   await friend.screenshot({ path: join(SHOTS, "check-pc-friend.png") });
+  await friend.click("#settings-button");
+  await friend.getByRole("button", { name: "ログアウト" }).click();
+  await friend.waitForSelector("#login:not([hidden])");
+  check("signed out: the list leaves the page", (await friend.locator(".history-row").count()) === 0 && !(await friend.evaluate(() => document.getElementById("history-list").textContent)));
+  await friend.click("#login-passkey");
+  await friend.waitForSelector("#chat:not([hidden]) .history-row", { timeout: 15000 });
+  check("signed in again: the history and the conversation open last are back",
+    (await friend.locator(".history-row").count()) === 1 && (await friend.locator(".msg").count()) === 2);
+  // A second tab of the friend's, open while they leave in the first.
+  const friend2 = await friendContext.newPage();
+  const friend2Errors = await watch(friend2);
+  await friend2.addInitScript((s) => { if (!sessionStorage.getItem("fielua.session")) sessionStorage.setItem("fielua.session", s); }, await friend.evaluate(() => sessionStorage.getItem("fielua.session")));
+  await friend2.goto(page0);
+  await friend2.waitForSelector("#chat:not([hidden]) .history-row", { timeout: 15000 });
+  await friend.click("#settings-button");
+  await friend.getByRole("button", { name: "登録を解除" }).click();
+  await friend.waitForSelector("#confirm[open]");
+  check("登録を解除 says this device's history goes too", (await friend.textContent("#confirm-body")).includes("この端末の会話履歴も消えます"));
+  await friend.click("#confirm-ok");
+  await friend.waitForSelector("#login:not([hidden])");
+  await sleep(300);
+  const gone = await friend.evaluate(async () => (await indexedDB.databases()).filter((d) => d.name.startsWith("fielua-history-")).length);
+  check("left: the friend's history database is gone from this browser", gone === 0, `${gone} left`);
+  const otherTabOut = await friend2.waitForSelector("#login:not([hidden])", { timeout: 5000 }).then(() => true, () => false);
+  await sleep(500);
+  const stillGone = await friend.evaluate(async () => (await indexedDB.databases()).filter((d) => d.name.startsWith("fielua-history-")).length);
+  check("the friend's other tab signs out too, and doesn't make the database again", otherTabOut && stillGone === 0 && (await friend2.locator(".history-row").count()) === 0, `${otherTabOut} ${stillGone}`);
+  check("no page errors in the friend's other tab", friend2Errors.length === 0, friend2Errors.join(" | "));
+  await friend2.close();
 
   // MARK: Out of credit
   await sendMessage(dev, "billing");
@@ -865,7 +1044,9 @@ try {
 
   // MARK: Dark
   await dev.emulateMedia({ colorScheme: "dark" });
-  await dev.locator(".msg.assistant .made-file").first().scrollIntoViewIfNeeded();
+  // (The conversation with files was deleted in the two-tab check: whatever is open now.)
+  const madeCard = dev.locator(".msg.assistant .made-file").first();
+  if (await madeCard.count()) await madeCard.scrollIntoViewIfNeeded();
   await dev.screenshot({ path: join(SHOTS, "check-dark.png") });
 
   check("no page errors on the iPhone", devErrors.length === 0, devErrors.join(" | "));

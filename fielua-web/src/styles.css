@@ -641,3 +641,163 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 :root { --safe-left: env(safe-area-inset-left, 0px); --safe-right: env(safe-area-inset-right, 0px); }
 .topbar { padding-left: calc(var(--safe-left) + 10px); padding-right: calc(var(--safe-right) + 10px); }
 .thread, .composer-area, .login { padding-left: max(var(--gutter), var(--safe-left)); padding-right: max(var(--gutter), var(--safe-right)); }
+
+/* MARK: 会話一覧 (the iPhone app's history)
+   On a phone it lies under the chat, and the chat slides aside, 92 px of it
+   left in sight (tap it to go back). On a wide screen it stands beside the
+   chat instead and stays open while chats are picked. --reveal is 0 (closed)
+   to 1 (open), and follows the finger while the chat is dragged. */
+
+:root {
+  --sidebar: #F1EDE5;
+  --panel-veil: #FAF7F1;
+  --drawer-w: min(max(calc(100vw - 92px), 260px), 360px);
+  --dock-w: clamp(300px, 30vw, 360px);
+  --drawer-curve: cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --sidebar: #0E0D0B; --panel-veil: #26231F; }
+}
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+.chat { background: var(--sidebar); }
+/* A sideways drag opens and closes the list, so the browser keeps only vertical scrolling and zoom here
+   (each scroll container needs it again; what scrolls sideways itself keeps its own). */
+.chat, .scroller, .history-scroll { touch-action: pan-y pinch-zoom; }
+.chat-panel {
+  position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--paper);
+}
+.chat.history-shown .chat-panel {
+  transform: translateX(calc(var(--drawer-w) * var(--reveal, 0)));
+  border-radius: clamp(24px, var(--safe-top), 55px);
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.12);
+}
+.chat.history-shown .chat-panel::after {
+  content: ""; position: absolute; inset: 0; z-index: 30; pointer-events: none;
+  background: var(--panel-veil); opacity: calc(0.55 * var(--reveal, 0));
+}
+.chat.history-animating .chat-panel,
+.chat.history-animating .chat-panel::after,
+.chat.history-animating .history {
+  transition: transform 0.4s var(--drawer-curve), opacity 0.4s var(--drawer-curve), left 0.4s var(--drawer-curve), visibility 0.4s;
+}
+
+.history {
+  position: absolute; top: 0; bottom: 0; left: 0; width: var(--drawer-w);
+  display: flex; flex-direction: column; background: var(--sidebar); color: var(--ink);
+  padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
+  visibility: hidden; opacity: calc(0.4 + 0.6 * var(--reveal, 0));
+}
+.chat.history-shown .history { visibility: visible; }
+.history-close {
+  position: absolute; top: 0; bottom: 0; right: 0; left: var(--drawer-w); z-index: 40;
+  border: 0; padding: 0; background: transparent; cursor: default;
+}
+
+.history-head {
+  display: flex; align-items: center; gap: 12px; min-height: 58px;
+  padding: 8px 24px 6px 24px;
+}
+.history-lockup { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding-left: 9px; }
+.history-lockup img { width: 28px; height: 28px; }
+.history-wordmark { font: 24px/1.1 var(--serif); color: var(--wordmark); letter-spacing: 0.01em; }
+.history-search {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px;
+  border-radius: 999px; background: color-mix(in srgb, var(--card) 72%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--input-border) 70%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  transform-origin: right center; animation: search-grow 0.44s cubic-bezier(0.34, 1.3, 0.5, 1);
+}
+.history-search svg { width: 18px; height: 18px; flex: none; fill: none; stroke: var(--secondary); stroke-width: 2; stroke-linecap: round; }
+.history-search input {
+  flex: 1; min-width: 0; border: 0; background: none; outline: none; padding: 0; font-size: 17px; color: var(--ink);
+  -webkit-appearance: none; appearance: none;
+}
+.history-search input::placeholder { color: var(--placeholder); }
+.history-search input::-webkit-search-cancel-button { display: none; }
+@keyframes search-grow { from { opacity: 0; transform: scaleX(0.3); } to { opacity: 1; transform: none; } }
+
+.glass-circle {
+  flex: none; width: 44px; height: 44px; border-radius: 999px; padding: 0; display: grid; place-items: center;
+  color: var(--tint); background: color-mix(in srgb, var(--card) 72%, transparent);
+  border: 0.5px solid color-mix(in srgb, var(--input-border) 70%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: 0 1px 2px rgba(80, 55, 20, 0.06);
+}
+.glass-circle.big { width: 48px; height: 48px; color: var(--ink); }
+.glass-circle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.glass-circle.big svg { width: 22px; height: 22px; stroke-width: 1.6; }
+.glass-circle:active { filter: brightness(0.96); }
+.glass-circle .close-mark { display: none; }
+.glass-circle.searching .magnifier { display: none; }
+.glass-circle.searching .close-mark { display: block; animation: xmark-in 0.44s cubic-bezier(0.34, 1.3, 0.5, 1); }
+@keyframes xmark-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+
+.history-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.history-list { list-style: none; margin: 0; padding: 8px 0 12px; }
+.history-row {
+  display: block; width: calc(100% - 48px); margin: 0 24px; height: 48px; padding: 0 9px;
+  border: 0; border-radius: 14px; background: none; color: var(--ink);
+  font-size: 17px; line-height: 48px; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+}
+.history-row[aria-current="true"] { background: var(--selection); }
+.history-row:active:not(:disabled) { opacity: 0.6; }
+.history-row:disabled { opacity: 0.4; cursor: default; }
+@media (hover: hover) {
+  .history-row:hover:not(:disabled):not([aria-current="true"]) { background: color-mix(in srgb, var(--selection) 55%, transparent); }
+}
+.history-empty { margin: 12px 0 0; padding-left: 33px; color: var(--secondary); font-size: 17px; }
+
+.history-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 24px 4px; }
+.history-new {
+  display: inline-flex; align-items: center; gap: 10px; height: 48px; padding: 0 22px; border: 0; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent); font-size: 17px; font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 1px 2px rgba(120, 80, 0, 0.12);
+}
+.history-new svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.history-new:disabled { opacity: 0.5; cursor: default; }
+.history-new:active:not(:disabled) { filter: brightness(0.96); }
+
+/* A row's menu (long press, or the right button): one item, 削除, as the app's. */
+.row-menu {
+  position: absolute; z-index: 50; min-width: 200px; padding: 0; border-radius: 16px; overflow: hidden;
+  background: color-mix(in srgb, var(--card) 98%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(24px); backdrop-filter: saturate(180%) blur(24px);
+  border: 0.5px solid var(--input-border); box-shadow: 0 12px 40px rgba(60, 40, 10, 0.16), 0 1px 3px rgba(60, 40, 10, 0.08);
+  animation: menu-open 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1); transform-origin: 24px 0;
+}
+.row-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 46px;
+  padding: 0 16px; border: 0; background: none; font-size: 17px; text-align: left; color: var(--ink);
+}
+.row-menu button.danger { color: var(--caution); }
+.row-menu button:hover, .row-menu button:active { background: var(--chip); }
+.row-menu svg { width: 21px; height: 21px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+.history-button svg { width: 24px; height: 24px; fill: none; stroke: var(--ink); stroke-width: 1.9; stroke-linecap: round; }
+
+/* A wide screen: the list beside the chat, its open state kept on this device. */
+@media (min-width: 1000px) {
+  .history {
+    width: var(--dock-w); opacity: 1; transform: translateX(-100%);
+    border-right: 1px solid var(--input-border); padding-left: var(--safe-left);
+  }
+  .chat.docked .history { visibility: visible; transform: none; }
+  .chat.docked .chat-panel { left: var(--dock-w); }
+  .chat.history-shown .chat-panel { transform: none; border-radius: 0; box-shadow: none; }
+  .chat.history-shown .chat-panel::after { content: none; }
+  .history-close { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat.history-animating .chat-panel,
+  .chat.history-animating .chat-panel::after,
+  .chat.history-animating .history { transition: transform 0.15s ease-in-out, opacity 0.15s ease-in-out, left 0.15s ease-in-out, visibility 0.15s !important; }
+}

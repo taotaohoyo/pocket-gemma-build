@@ -4,6 +4,7 @@
 
 import { RELAY, RelayError, call, callJSON, session } from "./api.js";
 import { ACCEPT, AttachError, LIMITS as ATTACH, prepare, release, sizeLabel, stored, timeLabel } from "./attach.js";
+import * as archive from "./history.js";
 import { attachReplyActions, copyText, loadMath, ReplyView } from "./markdown.js";
 import { createPasskey, forgetPasskey, newAdminKey, passkeysSupported, usePasskey } from "./passkey.js";
 import { Pacer, readEvents } from "./stream.js";
@@ -39,6 +40,12 @@ const MAX_TOTAL_BYTES = 180 * 1024;
 const encoder = new TextEncoder();
 const bytes = (text) => encoder.encode(text).length;
 
+/** How long Anthropic keeps a code container, from when it was made; the page lets one go a day early. */
+const CONTAINER_DAYS = 29;
+/** How long the relay hands out a file a reply made (its own rule: it knows whose each one is that long). */
+const FILE_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const state = {
   status: null,
   chat: loadChat(),
@@ -61,42 +68,171 @@ function loadPrefs() {
       efforts: typeof value.efforts === "object" && value.efforts ? value.efforts : {},
       // The plus menu's switches: off until turned on, then kept on this device.
       tools: { webSearch: value.tools?.webSearch === true, files: value.tools?.files === true },
+      // On a wide screen, whether the list stands beside the chat (open until closed).
+      historyDocked: value.historyDocked !== false,
     };
   } catch {
-    return { model: TOP.model, efforts: {}, tools: { webSearch: false, files: false } };
+    return { model: TOP.model, efforts: {}, tools: { webSearch: false, files: false }, historyDocked: true };
   }
 }
 function savePrefs() {
   try { localStorage.setItem("fielua.prefs", JSON.stringify(state.prefs)); } catch { /* private mode */ }
 }
+function newChatID() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** A new, empty conversation (kept in the history once its first question is sent). */
+function blankChat() {
+  return { id: newChatID(), createdAt: Date.now(), updatedAt: 0, messages: [] };
+}
+
+/** A conversation read back from the tab or the history: what it lacks filled in, a reply cut off mid-way marked stopped. */
+function restoreChat(value) {
+  const chat = {
+    ...value,
+    id: typeof value.id === "string" && /^[\w-]{8,64}$/.test(value.id) ? value.id : newChatID(),
+    createdAt: Number(value.createdAt) || Date.now(),
+    updatedAt: Number(value.updatedAt) || (value.messages.length ? Date.now() : 0),
+    savedAt: Number(value.savedAt) || 0,
+    owner: typeof value.owner === "string" ? value.owner : "",
+    messages: value.messages.filter((message) => message && (message.role === "user" || message.role === "assistant")),
+  };
+  for (const message of chat.messages) {
+    // Cut off, or still being written in another tab: shown as stopped, never written back as such by this copy's file names.
+    if (message.end === "streaming") { message.end = message.error ? "failed" : "stopped"; message.unfinished = true; }
+  }
+  return chat;
+}
+
 function loadChat() {
   try {
     const value = JSON.parse(sessionStorage.getItem("fielua.chat") ?? "null");
-    if (value && Array.isArray(value.messages)) return value;
+    if (value && Array.isArray(value.messages)) return restoreChat(value);
   } catch { /* none */ }
-  return { messages: [] };
+  return blankChat();
 }
-function saveChat() {
-  const write = (pictures) => sessionStorage.setItem("fielua.chat", JSON.stringify({
-    ...(state.chat.container ? { container: state.chat.container } : {}),
-    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files, trimmed }) => ({
+
+/** A conversation as it is kept: the text and what was shown, never an attachment's data. */
+function serialize(chat, pictures = true) {
+  return {
+    id: chat.id, createdAt: chat.createdAt, updatedAt: chat.updatedAt, savedAt: chat.savedAt ?? 0,
+    // Whose history it goes into (someone else signing in in this tab doesn't get it).
+    ...(chat.owner ? { owner: chat.owner } : {}),
+    ...(chat.container ? { container: chat.container, ...(chat.containerAt ? { containerAt: chat.containerAt } : {}) } : {}),
+    messages: chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files, trimmed }) => ({
       role, text, model, effort, served, end, error, ...(trimmed ? { trimmed } : {}),
       ...(attachments?.length ? { attachments: attachments.map((a) => ({ ...stored(a), thumb: pictures ? a.thumb : undefined })) } : {}),
       ...(search?.queries.length || search?.pages.length ? { search: { queries: search.queries, pages: search.pages.slice(0, 12), failed: search.failed ?? null } } : {}),
-      ...(files?.length ? { files: files.map(({ id, name, size, mimeType }) => ({ id, name, size, mimeType })) } : {}),
+      ...(files?.length ? { files: files.map(({ id, name, size, mimeType, madeAt }) => ({ id, name, size, mimeType, ...(madeAt ? { madeAt } : {}) })) } : {}),
     })),
-  }));
-  try {
-    write(true);
-  } catch {
-    // The tab's storage is full: the names stay, the pictures only on the page.
-    try { write(false); } catch { /* kept on the page only */ }
+  };
+}
+
+/**
+ * Keeps a conversation: in this tab (the open one, for a reload) and in
+ * this device's history. Each change raises its revision (savedAt), so the
+ * newer of two copies (this tab's, another tab's) is known.
+ */
+function saveChat(chat = state.chat, { history = true } = {}) {
+  if (history) {
+    chat.savedAt = Math.max(Date.now(), (chat.savedAt ?? 0) + 1);
+    keepInHistory(chat);
+  }
+  if (chat === state.chat) {
+    const write = (pictures) => sessionStorage.setItem("fielua.chat", JSON.stringify(pictures ? serialize(chat, true) : { ...serialize(chat, false), picturesDropped: true }));
+    try {
+      write(true);
+    } catch {
+      // The tab's storage is full: the names stay, the pictures only on the page (and in the history).
+      try {
+        write(false);
+      } catch {
+        // Not even that: no older copy is left to come back on a reload (the history has this one).
+        try { sessionStorage.removeItem("fielua.chat"); } catch { /* none */ }
+      }
+    }
   }
 }
+
 function forgetChat() {
   sessionStorage.removeItem("fielua.chat");
   for (const message of state.chat.messages) message.attachments?.forEach(release);
-  state.chat = { messages: [] };
+  state.chat = blankChat();
+}
+
+const graphemes = (text) => (typeof Intl.Segmenter === "function"
+  ? Array.from(new Intl.Segmenter("ja", { granularity: "grapheme" }).segment(text), (part) => part.segment)
+  : Array.from(text));
+
+/** A conversation's name in the list, as the iPhone app makes it: the first question's first 28 characters. */
+function titleOf(chat) {
+  const first = chat.messages.find((message) => message.role === "user");
+  if (!first) return "新しいチャット";
+  const text = (first.text ?? "").trim().replace(/\r?\n/g, " ");
+  if (text) return graphemes(text).slice(0, 28).join("");
+  const kinds = (first.attachments ?? []).map((attachment) => attachment.kind);
+  return kinds.includes("video") ? "動画" : kinds.includes("image") ? "写真" : kinds.length ? "ファイル" : "新しいチャット";
+}
+
+// MARK: The history (this device only, encrypted; see history.js)
+
+const historySaves = new Map();
+let historyTimer = 0;
+let historyWriting = Promise.resolve();
+let historyWarned = false;
+
+/** A conversation goes into the history once it has a question: written a moment later, the latest state once. */
+function keepInHistory(chat) {
+  if (!archive.isOpen() || !chat.messages.some((message) => message.role === "user")) return;
+  const tag = archive.ownerTag();
+  // Someone else's conversation (left in this tab when their sign-in lapsed) never goes into this history.
+  if (chat.owner && chat.owner !== tag) return;
+  chat.owner = tag;
+  historySaves.set(chat.id, chat);
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(flushHistory, 300);
+}
+
+/** Writes what waits, one after another. */
+function flushHistory() {
+  clearTimeout(historyTimer);
+  const chats = [...historySaves.values()];
+  historySaves.clear();
+  if (!chats.length) return historyWriting;
+  // Written for the person they were queued for, and nobody else (save refuses once another key is here).
+  const whose = archive.ownerTag();
+  historyWriting = historyWriting.catch(() => {}).then(async () => {
+    for (const chat of chats) {
+      const meta = { title: titleOf(chat), createdAt: chat.createdAt, updatedAt: chat.updatedAt };
+      try {
+        if (!await archive.save(serialize(chat, true), meta, whose)) continue;
+      } catch (error) {
+        try {
+          // The device is full: the conversation is kept without its pictures.
+          if (error?.name !== "QuotaExceededError") throw error;
+          if (!await archive.save(serialize(chat, false), meta, whose)) continue;
+        } catch (again) {
+          if (!archive.isOpen()) return;
+          console.warn("history", again?.name ?? "error");
+          if (!historyWarned) { historyWarned = true; toast(again?.name === "QuotaExceededError" ? "端末の空きが足りないため、会話履歴に保存できませんでした。" : "会話履歴に保存できませんでした。"); }
+          continue;
+        }
+      }
+      archive.keep();
+    }
+    renderHistory();
+  });
+  return historyWriting;
+}
+
+/** A reply being written: what has come so far is kept now (the page may go before the next checkpoint). */
+function syncStreaming() {
+  const run = state.streaming;
+  if (!run || !run.pacer.text || run.message.text === run.pacer.text) return;
+  run.message.text = run.pacer.text;
+  saveChat(run.chat);
 }
 
 // MARK: Little helpers
@@ -271,7 +407,7 @@ function wireLogin() {
     setBusy(button, true);
     try {
       session.set(await signInWithPasskey());
-      await enterChat();
+      await enterChat(true);
     } catch (error) {
       showLogin("main", loginErrorText(error));
     } finally {
@@ -290,7 +426,7 @@ function wireLogin() {
     try {
       session.set(await registerWithCode(code));
       $("invite-code").value = "";
-      await enterChat();
+      await enterChat(true);
       toast("登録しました。次からはパスキーでログインできます。");
     } catch (error) {
       showLogin("invite", loginErrorText(error));
@@ -321,7 +457,7 @@ function wireLogin() {
       session.set(await registerWithCode(made.code));
       $("made-admin-key").hidden = true;
       $("made-admin-key").textContent = "";
-      await enterChat();
+      await enterChat(true);
       toast("開発者として登録しました。次からはパスキーでログインできます。");
     } catch (error) {
       showLogin("setup", loginErrorText(error));
@@ -342,16 +478,40 @@ function readInviteLink() {
 
 // MARK: The chat
 
-async function enterChat() {
+async function enterChat(signedIn = false) {
   await refreshStatus();
   if (!session.get()) return;
+  // Signed in anew in this tab: the conversation left from before waits, unseen, until the key says whose it is.
+  if (signedIn) holdChat();
   $("login").hidden = true;
   $("chat").hidden = false;
+  applyDock(false);
   renderTopbar();
   renderThread();
   updateComposer();
   loadMath();
   if (!matchMedia("(pointer: coarse)").matches) $("input").focus();
+  watchExpiry();
+  // The history after the chat shows (it waits on the relay for the key).
+  await unlockHistory();
+}
+
+let expiryTimer = 0;
+/** When the sign-in's 12 hours end, the page signs out by itself (the history locked with it). */
+function watchExpiry() {
+  clearTimeout(expiryTimer);
+  const ends = session.get()?.expiresAt;
+  if (typeof ends !== "number") return;
+  expiryTimer = setTimeout(expired, Math.min(Math.max(ends - Date.now(), 0) + 1000, 2 ** 31 - 1));
+}
+function expired() {
+  if ($("chat").hidden) return;
+  if (session.get()) { watchExpiry(); return; }
+  // A reply being written ends first.
+  if (state.streaming) { expiryTimer = setTimeout(expired, 5000); return; }
+  signedOut();
+  closeSheets();
+  showLogin("main", errorText(401, "unauthorized"));
 }
 
 async function refreshStatus() {
@@ -359,7 +519,7 @@ async function refreshStatus() {
     state.status = await callJSON("/v1/status");
   } catch (error) {
     if (error instanceof RelayError && (error.status === 401 || error.code === "revoked")) {
-      session.clear();
+      signedOut();
       showLogin("main", errorText(error.status, error.code));
       return;
     }
@@ -372,6 +532,7 @@ async function refreshStatus() {
   renderCredit();
   renderTools();
   updateBanner();
+  retryHistory();
 }
 
 function catalog() {
@@ -666,6 +827,7 @@ function wireAttachments() {
     if (!menu.hidden) { close(); return; }
     const full = state.draft.length + state.preparing >= ATTACH.perMessage;
     for (const item of menu.querySelectorAll("[data-pick]")) item.disabled = !!state.streaming || state.preparing > 0 || full;
+    $("menu-new-chat").disabled = !!state.streaming;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
     renderTools();
@@ -677,6 +839,7 @@ function wireAttachments() {
       close();
     });
   }
+  $("menu-new-chat").addEventListener("click", () => { close(); startNewChat(); });
   for (const item of menu.querySelectorAll("[data-pick]")) {
     const input = $(`pick-${item.dataset.pick}`);
     input.accept = ACCEPT[item.dataset.pick];
@@ -724,7 +887,14 @@ function toolsFor() {
   if (!state.status?.tools) return null;
   const { webSearch, files } = state.prefs.tools;
   if (!webSearch && !files) return null;
-  return { webSearch, files, ...(files && state.chat.container ? { container: state.chat.container } : {}) };
+  return { webSearch, files, ...(files && liveContainer(state.chat) ? { container: state.chat.container } : {}) };
+}
+
+/** The chat's code container, while Anthropic still keeps it (30 days from when it was made). */
+function liveContainer(chat) {
+  if (!chat.container) return null;
+  if (chat.containerAt && Date.now() - chat.containerAt > CONTAINER_DAYS * DAY_MS) return null;
+  return chat.container;
 }
 
 const TOOL_LABELS = {
@@ -814,16 +984,21 @@ function fileKind(file) {
 }
 
 /** The files a reply made, each with its download button; a picture shows itself too. */
+const fileExpired = (file) => !!file.madeAt && Date.now() - file.madeAt > FILE_DAYS * DAY_MS;
+
 function filesElement(message) {
   return h("div", { class: "made-files" }, message.files.map((file) => {
-    const button = h("button", { type: "button", class: "secondary download", "aria-label": `保存: ${file.name ?? "ファイル"}` }, icon("down"), h("span", { text: "保存" }));
-    button.addEventListener("click", () => downloadFile(file, button));
+    const expired = fileExpired(file);
+    const button = expired ? null : h("button", { type: "button", class: "secondary download", "aria-label": `保存: ${file.name ?? "ファイル"}` }, icon("down"), h("span", { text: "保存" }));
+    button?.addEventListener("click", () => downloadFile(file, button));
+    const meta = expired ? "作成から 30 日を過ぎたため、保存できません"
+      : file.name ? `${fileKind(file)}${file.size ? ` · ${sizeLabel(file.size)}` : ""}` : "読み込んでいます…";
     const card = h("div", { class: "made-file" },
       icon("doc"),
       h("span", { class: "file-text" }, h("span", { class: "file-name", text: file.name ?? "ファイル" }),
-        h("span", { class: "file-meta", text: file.name ? `${fileKind(file)}${file.size ? ` · ${sizeLabel(file.size)}` : ""}` : "読み込んでいます…" })),
+        h("span", { class: "file-meta", text: meta })),
       button);
-    if (/^image\/(png|jpeg|gif|webp)$/.test(file.mimeType ?? "") && (file.size ?? 0) < 8 * 1024 * 1024) {
+    if (!expired && /^image\/(png|jpeg|gif|webp)$/.test(file.mimeType ?? "") && (file.size ?? 0) < 8 * 1024 * 1024) {
       const picture = h("img", { class: "made-picture", alt: file.name ?? "", hidden: true });
       card.prepend(picture);
       card.classList.add("with-picture");
@@ -859,7 +1034,7 @@ async function downloadFile(file, button) {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   } catch (error) {
-    toast(error?.code === "not_found" ? "このファイルはもうありません。Anthropic に残るのは 30 日ほどです。" : errorText(error?.status ?? 0, error?.code ?? "network"));
+    toast(error?.code === "not_found" ? "このファイルは保存できませんでした。もう一度作るよう頼んでください。" : errorText(error?.status ?? 0, error?.code ?? "network"));
   } finally {
     button.disabled = false;
     button.classList.remove("busy");
@@ -867,10 +1042,10 @@ async function downloadFile(file, button) {
 }
 
 /** The names and sizes of the files a finished reply made (the relay knows them as this person's a moment after the reply ends). */
-async function loadFileInfo(message) {
+async function loadFileInfo(message, chat = state.chat) {
   let changed = false;
   for (const file of message.files ?? []) {
-    if (file.name) continue;
+    if (file.name || fileExpired(file)) continue;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
         const info = await callJSON(`/v1/files/${encodeURIComponent(file.id)}`);
@@ -883,9 +1058,11 @@ async function loadFileInfo(message) {
       }
     }
   }
-  if (changed) {
-    saveChat();
-    finishElement(message);
+  // Not for a conversation deleted or replaced meanwhile (it would come back, or an older copy would win);
+  // a reply cut off mid-way in a copy from another tab only shows the names (that tab writes the reply).
+  if (changed && (chat === state.chat || liveChats.get(chat.id) === chat)) {
+    saveChat(chat, { history: !message.unfinished });
+    if (chat === state.chat) finishElement(message);
   }
 }
 
@@ -1033,9 +1210,12 @@ async function sendFromComposer() {
     renderTray();
   }
   state.chat.messages.push(message);
+  state.chat.updatedAt = Date.now();
   $("messages").append(messageElement(message));
   $("empty").hidden = true;
   saveChat();
+  setLastOpen(state.chat.id);
+  renderHistory();
   await ask();
 }
 
@@ -1073,9 +1253,17 @@ async function ask() {
 
   const controller = new AbortController();
   const pacer = new Pacer();
-  const run = { controller, message, pacer, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0 };
+  const chat = state.chat;
+  const run = { controller, message, chat, pacer, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0 };
   state.streaming = run;
   updateComposer();
+  renderHistory();
+  // What has come so far goes into the history every few seconds (a closed tab keeps it, as 停止しました).
+  run.checkpoint = setInterval(() => {
+    if (!pacer.text || message.text === pacer.text) return;
+    message.text = pacer.text;
+    saveChat(chat);
+  }, 3000);
 
   const render = (force = false) => {
     const now = performance.now();
@@ -1101,14 +1289,17 @@ async function ask() {
     // The last chunk drawn once more as finished text (unchanged chunks stay as they are).
     pacer.shown = pacer.text.length;
     entry.view.update(pacer.text, { live: false, animate: true });
+    clearInterval(run.checkpoint);
     message.text = pacer.text;
     if (message.end === "streaming") message.end = "done";
     message.activity = null;
+    for (const file of message.files ?? []) file.madeAt ??= Date.now();
     state.streaming = null;
     finishElement(message);
-    if (message.files?.length) loadFileInfo(message);
-    saveChat();
+    if (message.files?.length) loadFileInfo(message, chat);
+    saveChat(chat);
     updateComposer();
+    renderHistory();
     if (isPinned(160)) scrollToEnd(false);
     refreshStatus();
   };
@@ -1133,6 +1324,7 @@ async function ask() {
     let body = {};
     try { body = await response.json(); } catch { body = {}; }
     if (response.status === 401) {
+      clearInterval(run.checkpoint);
       // The session lapsed: the question goes back into the composer for after the next sign-in.
       state.chat.messages.pop();
       element.remove();
@@ -1151,7 +1343,21 @@ async function ask() {
       state.streaming = null;
       updateComposer();
       saveChat();
-      session.clear();
+      if (!hasQuestion(state.chat)) {
+        // It was this conversation's first question: its line in the history goes too (the question is back in the composer).
+        const id = state.chat.id;
+        const whose = archive.ownerTag();
+        historySaves.delete(id);
+        if (lastOpen() === id) setLastOpen("");
+        // Before the lock that follows the sign-out (it waits for this chain); only in that person's history.
+        historyWriting = historyWriting.catch(() => {}).then(() => (whose && archive.ownerTag() === whose ? archive.remove(id) : null)).catch(() => {});
+        // The question goes again later as a conversation of its own (its old id is marked deleted),
+        // and only for this person (see holdChat).
+        state.chat = blankChat();
+        state.chat.owner = whose;
+        sessionStorage.removeItem("fielua.chat");
+      }
+      signedOut();
       showLogin("main", errorText(401, "unauthorized"));
       return;
     }
@@ -1169,7 +1375,7 @@ async function ask() {
   const toolBlocks = new Map();
   let afterTool = false;
   const keepContainer = (id) => {
-    if (id && state.chat.container !== id) { state.chat.container = id; saveChat(); }
+    if (id && chat.container !== id) { chat.container = id; chat.containerAt = Date.now(); saveChat(chat); }
   };
   const working = (activity) => {
     message.activity = activity;
@@ -1270,7 +1476,10 @@ function wireViewport() {
   const chat = $("chat");
   const update = () => {
     const keyboard = window.innerHeight - viewport.height > 120;
-    chat.classList.toggle("keyboard", keyboard);
+    // The list's search on a phone: the list follows the keyboard, the chat beside it stays where it is (as on the iPhone).
+    const listOnly = keyboard && drawer.open && !wide.matches;
+    chat.classList.toggle("keyboard", keyboard && !listOnly);
+    $("chat-panel").style.height = listOnly ? `${window.innerHeight}px` : "";
     if (keyboard) {
       chat.style.height = `${viewport.height}px`;
       chat.style.transform = `translateY(${viewport.offsetTop}px)`;
@@ -1460,9 +1669,61 @@ async function renderSettings() {
     h("p", { text: "書いたメッセージと添付、この会話のこれまでのやり取りが、Fielua の中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
     h("p", { class: "muted", text: "写真は小さくし、位置情報などを消してから送ります。動画は音声を送らず、いくつかの場面の静止画にします。PDF とテキストはそのまま送ります。" }),
     h("p", { class: "muted", text: "＋ で「ウェブ検索」をオンにすると、Claude が決めた検索語でウェブを調べます（1 回 $0.01）。「ファイル作成」をオンにすると、Anthropic のサーバーの中でコードを動かしてファイルを作ります。作ったファイルは Anthropic に 30 日ほど残り、作った本人だけが保存できます。" }),
-    h("p", { class: "muted", text: "中継サーバーは会話を保存しません。会話はこのタブの中だけにあり、タブを閉じるかログアウトすると消えます。Anthropic は API の利用データを Anthropic の方針に沿って一定期間保持します。答えには誤りが含まれることがあります。" })));
+    h("p", { class: "muted", text: `中継サーバーは会話を保存しません。${archive.isOpen() ? "会話はこの端末の会話履歴にだけ残ります（下の「会話履歴」）。" : "会話はこのタブの中だけにあり、タブを閉じると消えます。"}Anthropic は API の利用データを Anthropic の方針に沿って一定期間保持します。答えには誤りが含まれることがあります。` })));
+  items.push(...await historySection());
   if ((status?.role ?? me?.role) === "developer") items.push(...await developerSection());
   body.replaceChildren(...items);
+}
+
+/** 設定 › 会話履歴: where it is kept, and deleting it all. */
+async function historySection() {
+  const section = [h("p", { class: "section-label", text: "会話履歴" })];
+  const open = archive.isOpen();
+  const count = open ? (await archive.list().catch(() => [])).length : 0;
+  const note = h("p", { class: "muted", role: "status" });
+  const removeAll = h("button", {
+    type: "button", class: "secondary danger", text: "この端末の履歴をすべて削除", disabled: !count,
+    onclick: async () => {
+      // Said in the card (a toast would sit under this sheet).
+      if (state.streaming) { note.textContent = "返信を書き終えると削除できます。"; return; }
+      note.textContent = "";
+      const ok = await confirmDialog({
+        title: `${count}件の会話を削除しますか？`,
+        body: ["この端末の会話履歴がすべて消えます。この操作は取り消せません。"],
+        ok: "削除", danger: true,
+      });
+      if (!ok || state.streaming) return;
+      historySaves.clear();
+      try {
+        if (!archive.isOpen()) throw new Error("locked");
+        await archive.removeAll();
+      } catch {
+        note.textContent = "会話履歴を削除できませんでした。";
+        return;
+      }
+      for (const chat of liveChats.values()) chat.messages.forEach((message) => message.attachments?.forEach(release));
+      liveChats.clear();
+      sessionStorage.removeItem("fielua.chat");
+      state.chat.messages.forEach((message) => message.attachments?.forEach(release));
+      state.chat = blankChat();
+      setLastOpen("");
+      clearDraft();
+      renderThread();
+      updateComposer();
+      renderHistory();
+      if ($("settings-sheet").open) renderSettings();
+      else toast("会話履歴を削除しました。");
+    },
+  });
+  section.push(h("div", { class: "card" },
+    open
+      ? h("p", { text: "会話はこの端末のブラウザの中にだけ、暗号化して残ります。中継サーバーには保存しません。読めるのはログインしている間だけです。" })
+      : h("p", { text: drawer.failed ? "会話履歴を読み込めませんでした。接続を確かめてください。今の会話はこのタブの中だけにあります。" : "この端末では会話履歴を保存できません。今の会話はこのタブの中だけにあり、タブを閉じると消えます。" }),
+    h("p", { class: "muted", text: "Safari では、このページを 7 日ほど使わないと消えることがあります。ホーム画面に追加して開くと消えにくくなります（Safari で残した会話は、ホーム画面のアプリには引き継がれません）。プライベートブラウズでは、タブを閉じると消えます。" }),
+    open ? h("p", { class: "muted", text: `${count}件の会話` }) : null,
+    open ? h("div", { class: "row-actions" }, removeAll) : null,
+    note));
+  return section;
 }
 
 async function developerSection() {
@@ -1558,9 +1819,8 @@ async function developerSection() {
 }
 
 async function logout() {
-  stop();
   const token = session.get()?.token;
-  session.clear();
+  signedOut();
   forgetChat();
   clearDraft();
   if (token) call("/web/logout", { method: "POST", body: {}, token }).catch(() => {});
@@ -1571,21 +1831,784 @@ async function logout() {
 async function leave() {
   const ok = await confirmDialog({
     title: "登録を解除",
-    body: ["あなたの登録とパスキーの記録が中継サーバーから消え、このアカウントは使えなくなります。もう一度使うには新しい招待が必要です。", "端末に残ったパスキーは、端末の設定（パスワード）から削除できます。"],
+    body: ["あなたの登録とパスキーの記録が中継サーバーから消え、このアカウントは使えなくなります。もう一度使うには新しい招待が必要です。この端末の会話履歴も消えます。", "端末に残ったパスキーは、端末の設定（パスワード）から削除できます。"],
     ok: "登録を解除", danger: true,
   });
   if (!ok) return;
+  // Which database is this person's (asked now if the key didn't come at sign-in), before the key goes.
+  if (!archive.isOpen()) await unlockHistory().catch(() => {});
   try {
     await callJSON("/v1/leave", { method: "POST", body: {} });
   } catch (error) {
     toast(error instanceof RelayError ? errorText(error.status, error.code) : "解除できませんでした");
     return;
   }
-  session.clear();
+  // The relay's key is gone with the registration: this device's history goes too.
+  stop();
+  historySaves.clear();
+  setLastOpen("");
+  await archive.destroy();
+  signedOut();
   forgetChat();
   clearDraft();
   closeSheets();
   showLogin("main", "登録を解除しました。");
+}
+
+// MARK: 会話一覧 (the iPhone app's history)
+
+const drawer = {
+  /** null until known; false when this device can't keep a history (an older relay, no IndexedDB). */
+  available: null,
+  /** The key didn't come (no connection, the relay busy): tried again when the page is back online or in view. */
+  failed: false,
+  /** On a phone: whether the list is open (the chat slid aside). */
+  open: false,
+  searching: false,
+  query: "",
+  /** Each conversation's text for searching, read when a search starts. */
+  texts: null,
+  /** The row whose menu is open. */
+  menuFor: null,
+};
+const wide = matchMedia("(min-width: 1000px)");
+const docked = () => wide.matches && state.prefs.historyDocked !== false;
+/** Conversations opened in this tab, as they are on the page (their attachments' data kept for a later question). */
+const liveChats = new Map();
+const LIVE_CHATS = 6;
+const normalize = (text) => String(text ?? "").normalize("NFKC").toLowerCase();
+const hasQuestion = (chat) => chat.messages.some((message) => message.role === "user");
+
+const lastOpenKey = () => `fielua.last.${archive.ownerTag()}`;
+function lastOpen() {
+  try { return localStorage.getItem(lastOpenKey()) ?? ""; } catch { return ""; }
+}
+function setLastOpen(id) {
+  if (!archive.isOpen()) return;
+  try { if (id) localStorage.setItem(lastOpenKey(), id); else localStorage.removeItem(lastOpenKey()); } catch { /* private mode */ }
+}
+
+let unlocking = null;
+/** After sign-in: this person's history unlocked, and the conversation that was open last opened again (once at a time). */
+function unlockHistory() {
+  if (archive.isOpen() || !session.get()) return Promise.resolve();
+  unlocking ??= openHistory().finally(() => { unlocking = null; });
+  return unlocking;
+}
+
+/** The conversation left in this tab from before a new sign-in (with its unsent text), until the key says whose it is. */
+let held = null;
+function holdChat() {
+  dropHeld();
+  if (state.streaming) return;
+  const text = $("input").value;
+  if (!state.chat.messages.length && !text.trim() && !state.draft.length) return;
+  held = { chat: state.chat, text, draft: state.draft };
+  state.draft = [];
+  renderTray();
+  $("input").value = "";
+  autoGrow();
+  sessionStorage.removeItem("fielua.chat");
+  state.chat = blankChat();
+}
+function dropHeld() {
+  if (!held) return;
+  held.chat.messages.forEach((message) => message.attachments?.forEach(release));
+  held.draft.forEach(release);
+  held = null;
+}
+
+/** Conversations set aside by チャット while the key was still on its way: they go into the history once it comes. */
+const waitingChats = new Map();
+
+/** The key didn't come earlier (no connection): asked again once the page is back. */
+function retryHistory() {
+  if (drawer.available === null && drawer.failed && session.get() && !$("chat").hidden) unlockHistory();
+}
+
+async function openHistory() {
+  const token = session.get()?.token;
+  try {
+    await archive.unlock();
+  } catch (error) {
+    if (session.get()?.token !== token) return;
+    // No connection, or the relay busy for a moment: asked again later. An older relay, or no storage here: not this time.
+    const passing = error instanceof RelayError && (error.status === 0 || error.status === 401 || error.status === 429 || error.status >= 500);
+    drawer.available = passing ? null : false;
+    drawer.failed = passing && error.status !== 401;
+    if (!passing) { dropHeld(); waitingChats.clear(); }
+    if (!(error instanceof RelayError)) console.warn("history", error?.name ?? error?.message ?? "unavailable");
+    renderHistory();
+    return;
+  }
+  // Signed out (or someone else signed in) meanwhile: that sign-in asks for its own key.
+  if (!archive.isOpen() || !session.get() || session.get().token !== token) return;
+  drawer.available = true;
+  drawer.failed = false;
+  const tag = archive.ownerTag();
+  const typed = () => $("input").value.trim() || state.draft.length || state.preparing;
+  if (held) {
+    // This person's own conversation from before comes back with what they had written; anyone else's
+    // (or one that can't be told, from a sign-in whose history never opened) goes.
+    const { chat, text, draft } = held;
+    held = null;
+    if (chat.owner && chat.owner === tag && !state.chat.messages.length && !state.streaming && !typed()) {
+      state.chat = chat;
+      state.draft = draft;
+      renderTray();
+      $("input").value = text;
+      autoGrow();
+      saveChat(chat, { history: false });
+      renderThread();
+      updateComposer();
+      renderTools();
+    } else {
+      chat.messages.forEach((message) => message.attachments?.forEach(release));
+      draft.forEach(release);
+    }
+  }
+  for (const chat of waitingChats.values()) {
+    if (chat.owner && chat.owner !== tag) continue;
+    remember(chat);
+    keepInHistory(chat);
+  }
+  waitingChats.clear();
+  if (state.chat.owner && state.chat.owner !== tag && !state.streaming) {
+    // Someone else's conversation, left in this tab when their sign-in lapsed: neither shown to this person nor kept for them.
+    forgetChat();
+    clearDraft();
+    $("input").value = "";
+    autoGrow();
+    renderThread();
+    updateComposer();
+    renderTools();
+  }
+  if (!state.chat.messages.length) {
+    const id = lastOpen();
+    const saved = id ? await archive.load(id).catch(() => null) : null;
+    // Not over what is being written in the new chat meanwhile.
+    if (saved && !state.chat.messages.length && !state.streaming && session.get() && !typed()) adopt(state.chat, saved);
+  } else if (!state.streaming) {
+    // The conversation open in this tab: this tab's copy or the history's, whichever is newer (another tab may have gone on with it).
+    const chat = state.chat;
+    const stored = await archive.load(chat.id).catch(() => null);
+    if (state.chat !== chat || state.streaming || !archive.isOpen()) { renderHistory(); return; }
+    const theirs = stored?.savedAt ?? 0;
+    const ours = chat.savedAt ?? 0;
+    if (!stored && archive.wasDeleted(chat.id)) {
+      // Deleted in another tab since: it doesn't come back.
+      sessionStorage.removeItem("fielua.chat");
+      chat.messages.forEach((message) => message.attachments?.forEach(release));
+      state.chat = blankChat();
+      renderThread();
+      updateComposer();
+      renderTools();
+    } else if (stored && (theirs > ours || (chat.picturesDropped && theirs === ours))) {
+      adopt(chat, stored);
+    } else {
+      if (stored && chat.picturesDropped) carryPictures(stored, chat);
+      delete chat.picturesDropped;
+      liveChats.set(chat.id, chat);
+      keepInHistory(chat);
+      // The tab's copy carries whose it is now (a reload before the next change keeps that).
+      saveChat(chat, { history: false });
+      setLastOpen(chat.id);
+    }
+  } else {
+    // A reply on its way (asked before the key came): it goes in.
+    liveChats.set(state.chat.id, state.chat);
+    keepInHistory(state.chat);
+    saveChat(state.chat, { history: false });
+    setLastOpen(state.chat.id);
+  }
+  renderHistory();
+}
+
+/** The history's copy of a conversation in place of the one on the page; what this tab still holds of its attachments stays. */
+function adopt(stale, saved) {
+  const chat = restoreChat(saved);
+  delete chat.picturesDropped;
+  stale.messages.forEach((message, index) => message.attachments?.forEach((attachment, at) => {
+    const twin = chat.messages[index]?.attachments?.[at];
+    if (stale.id === chat.id && twin && twin.name === attachment.name && twin.kind === attachment.kind) {
+      // The history's picture where this tab's copy had to leave it out.
+      if (!attachment.thumb && twin.thumb) attachment.thumb = twin.thumb;
+      chat.messages[index].attachments[at] = attachment;
+    } else release(attachment);
+  }));
+  if (liveChats.get(stale.id) === stale) liveChats.delete(stale.id);
+  liveChats.set(chat.id, chat);
+  state.chat = chat;
+  saveChat(chat, { history: false });
+  renderThread();
+  updateComposer();
+  renderTools();
+  for (const message of chat.messages) if (message.files?.some((file) => !file.name)) loadFileInfo(message, chat);
+}
+
+/** The pictures this tab's copy had to leave out (its storage was full), from the history's copy. */
+function carryPictures(from, to) {
+  to.messages.forEach((message, index) => message.attachments?.forEach((attachment, at) => {
+    const twin = from.messages?.[index]?.attachments?.[at];
+    if (!attachment.thumb && twin?.thumb && twin.name === attachment.name) attachment.thumb = twin.thumb;
+  }));
+}
+
+/** Another tab changed this person's history: deleted conversations go from this one too, a newer copy of the open one comes in. */
+async function followOtherTab(change) {
+  if (change.gone) {
+    // 登録を解除 in another tab: this registration is over here too.
+    historySaves.clear();
+    signedOut();
+    forgetChat();
+    clearDraft();
+    $("input").value = "";
+    closeSheets();
+    showLogin("main", "登録を解除しました。");
+    return;
+  }
+  drawer.texts = null;
+  const open = state.chat;
+  for (const [id, chat] of liveChats) {
+    if (chat === open || (change.id !== null && change.id !== id)) continue;
+    liveChats.delete(id);
+    chat.messages.forEach((message) => message.attachments?.forEach(release));
+  }
+  if (change.deleted) {
+    if (change.id === null) historySaves.clear();
+    else historySaves.delete(change.id);
+  }
+  const touched = change.id === null || change.id === open.id;
+  // A reply being written here goes on (and is kept); a conversation not yet in the history isn't anyone else's to change.
+  if (touched && !state.streaming && hasQuestion(open)) {
+    if (change.deleted) {
+      historySaves.delete(open.id);
+      liveChats.delete(open.id);
+      sessionStorage.removeItem("fielua.chat");
+      open.messages.forEach((message) => message.attachments?.forEach(release));
+      state.chat = blankChat();
+      renderThread();
+      updateComposer();
+      renderTools();
+    } else {
+      const stored = await archive.load(open.id).catch(() => null);
+      // A reply still being written there (saved every 3 s) comes once it is done.
+      const writing = stored?.messages?.some((message) => message.end === "streaming") && Date.now() - (stored.savedAt ?? 0) < 30_000;
+      if (stored && !writing && state.chat === open && !state.streaming && (stored.savedAt ?? 0) > (open.savedAt ?? 0)) adopt(open, stored);
+    }
+  }
+  renderHistory();
+}
+
+/** The session is over: what waits is written, then the history is locked and its list taken off the page. */
+function signedOut() {
+  session.clear();
+  clearTimeout(expiryTimer);
+  // A reply on its way stops here; what came of it is kept.
+  syncStreaming();
+  stop();
+  const tag = archive.ownerTag();
+  dropHeld();
+  for (const chat of waitingChats.values()) chat.messages.forEach((message) => message.attachments?.forEach(release));
+  waitingChats.clear();
+  unlocking = null;
+  // Nothing more is read from now on; the last writes still go, then the key goes.
+  archive.retire();
+  flushHistory().finally(() => { if (!session.get() && archive.ownerTag() === tag) archive.lock(); });
+  for (const chat of liveChats.values()) if (chat !== state.chat) chat.messages.forEach((message) => message.attachments?.forEach(release));
+  liveChats.clear();
+  drawer.texts = null;
+  drawer.available = null;
+  drawer.failed = false;
+  closeRowMenu();
+  hideHistory();
+  endSearch();
+  $("history-list").replaceChildren();
+  delete $("history-list").dataset.shape;
+  $("history-empty").hidden = true;
+}
+
+function remember(chat) {
+  if (!hasQuestion(chat)) return;
+  liveChats.delete(chat.id);
+  liveChats.set(chat.id, chat);
+  while (liveChats.size > LIVE_CHATS) {
+    const [oldest, kept] = liveChats.entries().next().value;
+    if (kept === state.chat) { liveChats.delete(oldest); liveChats.set(oldest, kept); continue; }
+    liveChats.delete(oldest);
+    kept.messages.forEach((message) => message.attachments?.forEach(release));
+  }
+}
+
+/** Switches the page to another conversation (none while a reply is being written). */
+function showChat(chat) {
+  state.chat = chat;
+  clearDraft();
+  const input = $("input");
+  input.value = "";
+  autoGrow();
+  saveChat(chat, { history: false });
+  renderThread();
+  updateComposer();
+  renderTools();
+  for (const message of chat.messages) if (message.files?.some((file) => !file.name)) loadFileInfo(message, chat);
+}
+
+/** 新しいチャット: the conversation so far stays in the history; an empty one is simply kept, with what is being written (as on the iPhone). */
+function startNewChat() {
+  if (state.streaming) return;
+  const coarse = matchMedia("(pointer: coarse)").matches;
+  if (!archive.isOpen() && drawer.available === null && session.get()) {
+    // The key hasn't come yet (or no connection): the conversation so far waits on the page and goes into the history once it does.
+    if (hasQuestion(state.chat)) {
+      waitingChats.set(state.chat.id, state.chat);
+      showChat(blankChat());
+    }
+    closeOnPhone();
+    renderHistory();
+    if (!coarse) $("input").focus();
+    unlockHistory();
+    return;
+  }
+  if (!archive.isOpen()) {
+    startNewChatWithoutHistory(coarse);
+    return;
+  }
+  if (state.chat.messages.length) {
+    remember(state.chat);
+    flushHistory();
+    showChat(blankChat());
+    setLastOpen("");
+  }
+  closeOnPhone();
+  renderHistory();
+  if (!coarse) $("input").focus();
+}
+
+/** On a phone the list goes once a chat is picked; beside a wide screen's chat it stays. */
+function closeOnPhone() {
+  if (!wide.matches) setDrawer(false);
+}
+
+/** Signed out: the list off the screen, without changing whether a wide screen shows it next time. */
+function hideHistory() {
+  const chat = $("chat");
+  clearTimeout(drawerSettle);
+  drawer.open = false;
+  chat.classList.remove("docked", "history-shown", "history-animating");
+  chat.style.removeProperty("--reveal");
+  $("history").inert = true;
+  $("chat-panel").inert = false;
+  $("history-close").hidden = true;
+  $("history-button").setAttribute("aria-expanded", "false");
+}
+
+/** Without a history (an older relay, or no storage here): as before, 元に戻す for a few seconds. */
+function startNewChatWithoutHistory(coarse) {
+  // An empty chat is simply kept, with what is being written.
+  if (!state.chat.messages.length) { closeOnPhone(); return; }
+  const previous = state.chat;
+  sessionStorage.removeItem("fielua.chat");
+  state.chat = blankChat();
+  clearDraft();
+  renderThread();
+  updateComposer();
+  closeOnPhone();
+  if (!coarse) $("input").focus();
+  if (!previous.messages.length) return;
+  const letGo = setTimeout(() => previous.messages.forEach((message) => message.attachments?.forEach(release)), 7000);
+  toast("新しい会話にしました。", {
+    label: "元に戻す",
+    run: () => {
+      clearTimeout(letGo);
+      if (state.streaming || state.chat.messages.length || !session.get()) { previous.messages.forEach((message) => message.attachments?.forEach(release)); return; }
+      state.chat = previous;
+      saveChat();
+      renderThread();
+      updateComposer();
+    },
+  });
+}
+
+async function openChat(id) {
+  closeRowMenu();
+  // The open one: back to it (also while its reply is being written).
+  if (id === state.chat.id) { closeOnPhone(); return; }
+  if (state.streaming) return;
+  let chat = liveChats.get(id);
+  if (!chat) {
+    const saved = await archive.load(id).catch(() => null);
+    if (!saved) { toast("この会話を開けませんでした。"); renderHistory(); return; }
+    chat = restoreChat(saved);
+  }
+  if (state.streaming || !session.get()) return;
+  remember(state.chat);
+  flushHistory();
+  remember(chat);
+  showChat(chat);
+  setLastOpen(chat.id);
+  closeOnPhone();
+  renderHistory();
+  if (!matchMedia("(pointer: coarse)").matches) $("input").focus({ preventScroll: true });
+}
+
+async function deleteChat(id, title) {
+  closeRowMenu();
+  if (state.streaming) return;
+  const ok = await confirmDialog({ title: "この会話を削除しますか？", body: [title], ok: "削除", danger: true });
+  if (!ok || state.streaming) return;
+  historySaves.delete(id);
+  try {
+    await archive.remove(id);
+  } catch {
+    toast("この会話を削除できませんでした。");
+    return;
+  }
+  const kept = liveChats.get(id);
+  liveChats.delete(id);
+  if (kept && kept !== state.chat) kept.messages.forEach((message) => message.attachments?.forEach(release));
+  drawer.texts?.delete(id);
+  if (lastOpen() === id) setLastOpen("");
+  if (id === state.chat.id) {
+    // The open one was deleted: a new, empty chat opens (the list stays open).
+    sessionStorage.removeItem("fielua.chat");
+    state.chat.messages.forEach((message) => message.attachments?.forEach(release));
+    showChat(blankChat());
+  }
+  await renderHistory();
+  const next = $("history-list").querySelector(".history-row:not(:disabled)");
+  (next ?? $("history-new")).focus({ preventScroll: true });
+}
+
+/** Whether the list can be seen now (open on a phone, or beside the chat). */
+const historyShown = () => !$("chat").hidden && (docked() || (!wide.matches && $("chat").classList.contains("history-shown")));
+
+let historyTicket = 0;
+let historyLatest = Promise.resolve();
+/** Draws the list again; the promise settles once the latest drawing is on the page. */
+function renderHistory() {
+  const ticket = ++historyTicket;
+  const pass = drawHistory(ticket).then((drawn) => (drawn ? undefined : historyLatest));
+  historyLatest = pass;
+  return pass;
+}
+
+async function drawHistory(ticket) {
+  $("history-new").disabled = !!state.streaming;
+  if (!historyShown()) return true;
+  const list = $("history-list");
+  const empty = $("history-empty");
+  if (!archive.isOpen()) {
+    list.replaceChildren();
+    delete list.dataset.shape;
+    empty.hidden = drawer.available === null && !drawer.failed;
+    empty.textContent = drawer.failed ? "会話履歴を読み込めませんでした。接続を確かめてください。" : "この端末では会話履歴を保存できません";
+    return true;
+  }
+  let items = await archive.list().catch(() => []);
+  if (ticket !== historyTicket) return false;
+  // The open conversation as it is now (its save may still be on the way).
+  if (hasQuestion(state.chat)) {
+    items = items.filter((item) => item.id !== state.chat.id);
+    items.push({ id: state.chat.id, title: titleOf(state.chat), updatedAt: state.chat.updatedAt });
+    items.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  }
+  const query = normalize(drawer.query.trim());
+  if (query) {
+    const texts = await searchTexts();
+    if (ticket !== historyTicket) return false;
+    items = items.filter((item) => normalize(item.title).includes(query) || texts.get(item.id)?.includes(query));
+  }
+  const busy = !!state.streaming;
+  // Drawn again only when something shows differently; the focused row keeps the focus.
+  const shape = JSON.stringify([busy, state.chat.id, items.map((item) => [item.id, item.title])]);
+  if (shape !== list.dataset.shape || !list.childElementCount !== !items.length) {
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+    list.replaceChildren(...items.map((item) => {
+      const current = item.id === state.chat.id;
+      const row = h("button", {
+        type: "button", class: "history-row", text: item.title, "aria-label": `会話を開く: ${item.title}`,
+        "aria-current": current ? "true" : null, disabled: busy && !current, dataset: { id: item.id },
+      });
+      return h("li", {}, row);
+    }));
+    list.dataset.shape = shape;
+    if (focused) [...list.querySelectorAll(".history-row")].find((row) => row.dataset.id === focused)?.focus({ preventScroll: true });
+  }
+  empty.hidden = items.length > 0;
+  empty.textContent = query ? "見つかりませんでした" : "会話はまだありません";
+  return true;
+}
+
+/** Every conversation's text (titles and messages, both sides), folded for searching. */
+async function searchTexts() {
+  if (drawer.texts) return drawer.texts;
+  const texts = new Map();
+  for (const chat of await archive.loadAll().catch(() => [])) texts.set(chat.id, normalize(chat.messages.map((message) => message.text ?? "").join("\n")));
+  for (const chat of liveChats.values()) texts.set(chat.id, normalize(chat.messages.map((message) => message.text ?? "").join("\n")));
+  texts.set(state.chat.id, normalize(state.chat.messages.map((message) => message.text ?? "").join("\n")));
+  drawer.texts = texts;
+  return texts;
+}
+
+const drawerWidth = () => $("history").getBoundingClientRect().width || 300;
+let drawerSettle = 0;
+
+/** Opens or closes the list on a phone (the chat slides aside, 92 px of it left); on a wide screen, shows it beside the chat or not. */
+function setDrawer(open, { animate = true, focus = true } = {}) {
+  const chat = $("chat");
+  if (wide.matches) {
+    if (state.prefs.historyDocked !== open) {
+      state.prefs.historyDocked = open;
+      savePrefs();
+    }
+    applyDock(animate);
+    if (open) renderHistory();
+    return;
+  }
+  const wasOpen = drawer.open;
+  const history = $("history");
+  const hadFocus = history.contains(document.activeElement) || document.activeElement === $("history-close");
+  drawer.open = open;
+  clearTimeout(drawerSettle);
+  if (open) {
+    $("input").blur();
+    if (!chat.classList.contains("history-shown")) {
+      chat.style.setProperty("--reveal", "0");
+      chat.classList.add("history-shown");
+      void chat.offsetWidth;
+    }
+  }
+  const drawn = open ? renderHistory() : null;
+  chat.classList.toggle("history-animating", animate);
+  chat.style.setProperty("--reveal", open ? "1" : "0");
+  history.inert = !open;
+  // Not aria-modal: the chat beside it is inert already, and 会話に戻る (outside the list) stays reachable for VoiceOver.
+  history.setAttribute("role", "dialog");
+  $("chat-panel").inert = open;
+  $("history-close").hidden = !open;
+  $("history-button").setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) {
+    closeRowMenu();
+    endSearch();
+    const done = () => { if (!drawer.open) chat.classList.remove("history-shown", "history-animating"); };
+    if (animate) drawerSettle = setTimeout(done, matchMedia("(prefers-reduced-motion: reduce)").matches ? 160 : 420);
+    else done();
+    if (focus && wasOpen && (hadFocus || document.activeElement === document.body)) $("history-button").focus({ preventScroll: true });
+  } else {
+    drawerSettle = setTimeout(() => chat.classList.remove("history-animating"), 420);
+    if (focus) {
+      drawn.then(() => {
+        if (!drawer.open || history.contains(document.activeElement)) return;
+        const rows = $("history-list");
+        (rows.querySelector('[aria-current="true"]') ?? rows.querySelector(".history-row:not(:disabled)") ?? $("history-new")).focus({ preventScroll: true });
+      });
+    }
+  }
+}
+
+/** A wide screen: the list beside the chat (no modal); a phone: back to the slide-aside list, closed. */
+function applyDock(animate = true) {
+  const chat = $("chat");
+  const history = $("history");
+  const button = $("history-button");
+  if (wide.matches) {
+    const on = docked();
+    drawer.open = false;
+    chat.classList.remove("history-shown");
+    chat.style.removeProperty("--reveal");
+    chat.classList.toggle("history-animating", animate);
+    clearTimeout(drawerSettle);
+    drawerSettle = setTimeout(() => chat.classList.remove("history-animating"), 420);
+    chat.classList.toggle("docked", on);
+    history.inert = !on;
+    history.setAttribute("role", "complementary");
+    history.removeAttribute("aria-modal");
+    $("chat-panel").inert = false;
+    $("history-close").hidden = true;
+    button.setAttribute("aria-label", on ? "会話一覧を閉じる" : "会話一覧を開く");
+    button.setAttribute("aria-expanded", on ? "true" : "false");
+    if (on) renderHistory();
+    else { closeRowMenu(); endSearch(); }
+  } else {
+    chat.classList.remove("docked");
+    button.setAttribute("aria-label", "会話一覧を開く");
+    setDrawer(false, { animate: false, focus: false });
+  }
+}
+
+function startSearch() {
+  drawer.searching = true;
+  drawer.texts = null;
+  $("history-lockup").hidden = true;
+  $("history-search").hidden = false;
+  const button = $("history-search-button");
+  button.classList.add("searching");
+  button.setAttribute("aria-label", "検索を閉じる");
+  button.setAttribute("aria-expanded", "true");
+  $("history-query").focus();
+}
+
+function endSearch() {
+  if (!drawer.searching && !drawer.query) return;
+  drawer.searching = false;
+  drawer.query = "";
+  const query = $("history-query");
+  query.value = "";
+  query.blur();
+  $("history-search").hidden = true;
+  $("history-lockup").hidden = false;
+  const button = $("history-search-button");
+  button.classList.remove("searching");
+  button.setAttribute("aria-label", "会話を検索");
+  button.setAttribute("aria-expanded", "false");
+  renderHistory();
+}
+
+function openRowMenu(row) {
+  if (state.streaming) return;
+  const menu = $("history-menu");
+  const box = $("history").getBoundingClientRect();
+  const at = row.getBoundingClientRect();
+  drawer.menuFor = row;
+  menu.hidden = false;
+  const below = at.bottom - box.top + 6;
+  const top = below + menu.offsetHeight > box.height - 8 ? at.top - box.top - menu.offsetHeight - 6 : below;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, at.left - box.left)}px`;
+  $("history-delete").focus({ preventScroll: true });
+}
+
+function closeRowMenu() {
+  const menu = $("history-menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  const row = drawer.menuFor;
+  drawer.menuFor = null;
+  if (row?.isConnected && $("history").contains(document.activeElement)) row.focus({ preventScroll: true });
+}
+
+function wireHistory() {
+  const chat = $("chat");
+  const list = $("history-list");
+  $("history-button").addEventListener("click", () => setDrawer(wide.matches ? !docked() : true));
+  $("history-close").addEventListener("click", () => setDrawer(false));
+  $("history-new").addEventListener("click", startNewChat);
+  $("history-settings").addEventListener("click", () => openSheet("settings-sheet"));
+  $("history-search-button").addEventListener("click", () => (drawer.searching ? endSearch() : startSearch()));
+  $("history-query").addEventListener("input", (event) => {
+    drawer.query = event.target.value;
+    renderHistory();
+  });
+  $("history-query").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); event.target.blur(); }
+  });
+  $("history-scroll").addEventListener("scroll", () => { closeRowMenu(); if (document.activeElement === $("history-query")) $("history-query").blur(); }, { passive: true });
+
+  // A row: a tap opens it; a long press (or the right button, or the menu key) opens its menu.
+  let press = null;
+  let pressed = false;
+  list.addEventListener("click", (event) => {
+    const row = event.target.closest(".history-row");
+    if (!row) return;
+    if (pressed) { pressed = false; event.preventDefault(); return; }
+    openChat(row.dataset.id);
+  });
+  list.addEventListener("contextmenu", (event) => {
+    const row = event.target.closest(".history-row");
+    if (!row) return;
+    event.preventDefault();
+    if (!row.disabled) openRowMenu(row);
+  });
+  list.addEventListener("keydown", (event) => {
+    const row = event.target.closest(".history-row");
+    if (row && (event.key === "Delete" || event.key === "Backspace") && !row.disabled) {
+      event.preventDefault();
+      deleteChat(row.dataset.id, row.textContent);
+    }
+  });
+  list.addEventListener("pointerdown", (event) => {
+    const row = event.target.closest(".history-row");
+    pressed = false;
+    if (!row || event.pointerType === "mouse" || row.disabled) return;
+    clearTimeout(press?.timer);
+    press = { x: event.clientX, y: event.clientY, timer: setTimeout(() => { pressed = true; press = null; openRowMenu(row); }, 500) };
+  });
+  const cancelPress = (event) => {
+    if (!press) return;
+    if (event.type === "pointermove" && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 8) return;
+    clearTimeout(press.timer);
+    press = null;
+  };
+  for (const type of ["pointermove", "pointerup", "pointercancel"]) list.addEventListener(type, cancelPress, { passive: true });
+  $("history-delete").addEventListener("click", () => {
+    const row = drawer.menuFor;
+    if (row) deleteChat(row.dataset.id, row.textContent);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!$("history-menu").hidden && !$("history-menu").contains(event.target)) closeRowMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if (!$("history-menu").hidden) { event.preventDefault(); closeRowMenu(); return; }
+    if (drawer.searching && $("history").contains(document.activeElement)) { event.preventDefault(); endSearch(); $("history-search-button").focus(); return; }
+    if (drawer.open) { event.preventDefault(); setDrawer(false); }
+  });
+
+  // On a phone, a sideways drag anywhere (not on what scrolls sideways itself) opens and closes the list,
+  // following the finger; let go, it goes where the finger was heading (the app's HistoryDrawerPan).
+  let drag = null;
+  const reveal = () => Number.parseFloat(chat.style.getPropertyValue("--reveal")) || 0;
+  chat.addEventListener("pointerdown", (event) => {
+    drag = null;
+    if (event.pointerType !== "touch" || wide.matches) return;
+    if (document.querySelector("dialog[open]") || !$("attach-menu").hidden) return;
+    // Not where something scrolls sideways itself (tables, code, a long formula, the attachments), nor in a text field.
+    if (event.target.closest(".fl-table-scroll, pre, .fl-math.display, .katex-display, .tray, .tool-pills, textarea, input, .row-menu")) return;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, from: drawer.open ? 1 : 0, active: false, lastX: event.clientX, lastT: event.timeStamp, speed: 0 };
+  }, { passive: true });
+  chat.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.active) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      if (Math.abs(dx) <= Math.abs(dy) * 1.2 || (drag.from === 0 && dx < 0) || (drag.from === 1 && dx > 0)) { drag = null; return; }
+      drag.active = true;
+      clearTimeout(drawerSettle);
+      closeRowMenu();
+      $("input").blur();
+      chat.classList.remove("history-animating");
+      if (!chat.classList.contains("history-shown")) {
+        chat.style.setProperty("--reveal", "0");
+        chat.classList.add("history-shown");
+        renderHistory();
+      }
+      try { chat.setPointerCapture(event.pointerId); } catch { /* gone */ }
+    }
+    const elapsed = event.timeStamp - drag.lastT;
+    if (elapsed > 0) drag.speed = 0.7 * ((event.clientX - drag.lastX) / elapsed) + 0.3 * drag.speed;
+    drag.lastX = event.clientX;
+    drag.lastT = event.timeStamp;
+    chat.style.setProperty("--reveal", String(Math.min(1, Math.max(0, drag.from + dx / drawerWidth()))));
+  }, { passive: true });
+  const letGo = (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const ended = drag;
+    drag = null;
+    if (!ended.active) return;
+    // Where it would come to rest in 0.2 s at this speed.
+    const projected = reveal() + (event.type === "pointercancel" ? 0 : (ended.speed * 200) / drawerWidth());
+    const open = projected > 0.5;
+    if (open !== drawer.open) setDrawer(open);
+    else setDrawer(open, { focus: false });
+  };
+  chat.addEventListener("pointerup", letGo);
+  chat.addEventListener("pointercancel", letGo);
+
+  wide.addEventListener("change", () => { closeRowMenu(); applyDock(false); });
+  // Another tab of this page changed the history: this one follows.
+  archive.onChange((change) => { followOtherTab(change); });
 }
 
 // MARK: Sheets
@@ -1632,31 +2655,6 @@ function wireComposer() {
     event.preventDefault();
     sendFromComposer();
   });
-  $("new-chat").addEventListener("click", async () => {
-    if (!state.chat.messages.length && !state.draft.length) return;
-    stop();
-    // The conversation stays a few seconds more, for 元に戻す (there is no history to find it in).
-    const previous = state.chat;
-    sessionStorage.removeItem("fielua.chat");
-    state.chat = { messages: [] };
-    clearDraft();
-    renderThread();
-    updateComposer();
-    if (!coarse) input.focus();
-    if (!previous.messages.length) return;
-    const letGo = setTimeout(() => previous.messages.forEach((message) => message.attachments?.forEach(release)), 7000);
-    toast("新しい会話にしました。", {
-      label: "元に戻す",
-      run: () => {
-        clearTimeout(letGo);
-        if (state.streaming || state.chat.messages.length || !session.get()) { previous.messages.forEach((message) => message.attachments?.forEach(release)); return; }
-        state.chat = previous;
-        saveChat();
-        renderThread();
-        updateComposer();
-      },
-    });
-  });
 }
 
 function start() {
@@ -1668,16 +2666,22 @@ function start() {
   wireComposer();
   wireAttachments();
   wireSheets();
+  wireHistory();
   wireScroller();
   wireViewport();
   attachReplyActions($("messages"));
-  addEventListener("online", updateBanner);
+  addEventListener("online", () => { updateBanner(); retryHistory(); });
   addEventListener("offline", updateBanner);
+  // Safari may stop the page in the background: what waits is written first, a reply's text so far with it.
+  addEventListener("pagehide", () => { syncStreaming(); flushHistory(); });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
+    if (document.hidden) { syncStreaming(); flushHistory(); return; }
     // Text that came while the tab was away shows at once.
     if (state.streaming) state.streaming.pacer.shown = state.streaming.pacer.text.length;
-    if (session.get() && !$("chat").hidden) refreshStatus();
+    if ($("chat").hidden) return;
+    // The sign-in ran out while the page was away: signed out (the history locked) before anything else.
+    if (!session.get()) { expired(); return; }
+    refreshStatus();
   });
   const invited = readInviteLink();
   if (session.get() && !invited) {
