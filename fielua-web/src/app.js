@@ -101,7 +101,13 @@ function restoreChat(value) {
   };
   for (const message of chat.messages) {
     // Cut off, or still being written in another tab: shown as stopped, never written back as such by this copy's file names.
-    if (message.end === "streaming") { message.end = message.error ? "failed" : "stopped"; message.unfinished = true; }
+    if (message.end === "streaming") {
+      message.end = message.error ? "failed" : "stopped";
+      message.unfinished = true;
+      // The relay may still have it (resumeCutReply): only this tab's own copy is ever picked up again.
+      if (typeof message.reply === "string" && /^[0-9a-f]{64}$/.test(message.reply)) message.cutReply = message.reply;
+    }
+    delete message.reply;
   }
   return chat;
 }
@@ -121,8 +127,10 @@ function serialize(chat, pictures = true) {
     // Whose history it goes into (someone else signing in in this tab doesn't get it).
     ...(chat.owner ? { owner: chat.owner } : {}),
     ...(chat.container ? { container: chat.container, ...(chat.containerAt ? { containerAt: chat.containerAt } : {}) } : {}),
-    messages: chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files, trimmed }) => ({
+    messages: chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files, trimmed, reply }) => ({
       role, text, model, effort, served, end, error, ...(trimmed ? { trimmed } : {}),
+      // A reply still being written that the relay keeps: a reload of this tab picks it up again.
+      ...(reply && end === "streaming" ? { reply } : {}),
       ...(attachments?.length ? { attachments: attachments.map((a) => ({ ...stored(a), thumb: pictures ? a.thumb : undefined })) } : {}),
       ...(search?.queries.length || search?.pages.length ? { search: { queries: search.queries, pages: search.pages.slice(0, 12), failed: search.failed ?? null } } : {}),
       ...(files?.length ? { files: files.map(({ id, name, size, mimeType, madeAt }) => ({ id, name, size, mimeType, ...(madeAt ? { madeAt } : {}) })) } : {}),
@@ -492,6 +500,8 @@ async function enterChat(signedIn = false) {
   loadMath();
   if (!matchMedia("(pointer: coarse)").matches) $("input").focus();
   watchExpiry();
+  // Back after Safari reloaded the page: a reply that was still coming is picked up again.
+  if (!signedIn) resumeCutReply();
   // The history after the chat shows (it waits on the relay for the key).
   await unlockHistory();
 }
@@ -623,6 +633,7 @@ const ICONS = {
   check: ["m5.5 12.5 4 4 9-9"],
   down: ["M12 4.5v10.5M7.5 10.5 12 15l4.5-4.5", "M6 19h12"],
   xmark: ["M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"],
+  again: ["M19 12a7 7 0 1 1-2.05-4.95", "M19.5 4.5V8H16"],
 };
 
 function icon(name, cls = "icon") {
@@ -938,6 +949,7 @@ function renderWork(message) {
   else if (live?.kind === "fetch") text = "ページを読んでいます…";
   else if (live?.kind === "edit") { text = "ファイルを書いています…"; symbol = "make"; }
   else if (live?.kind === "code") { text = "コードを実行しています…"; symbol = "make"; }
+  else if (live?.kind === "reconnect") { text = "つなぎ直しています…"; symbol = "again"; }
   else if (search?.queries.length) {
     const queries = search.queries.map((query) => `「${query}」`).join("");
     text = search.failed && !search.pages.length ? `${queries}を検索できませんでした` : `${queries}をウェブで検索しました`;
@@ -1231,42 +1243,98 @@ async function retry(failed) {
 }
 
 function stop() {
-  state.streaming?.controller.abort();
+  const run = state.streaming;
+  if (!run) return;
+  run.controller.abort();
+  // A kept reply goes on at the relay without its connection: it is stopped there too.
+  forgetReply(run);
 }
 
-/** Asks Claude about the conversation so far and lays its reply out as it comes. */
-async function ask() {
-  const { model, effort } = choice();
-  const turns = contextTurns(state.chat.messages);
-  if (!turns.length) return;
-  if (turns.some((turn) => bytes(turn.content) > MAX_TURN_BYTES)) { toast("メッセージが長すぎます。新しい会話でお試しください。"); return; }
-  const tools = toolsFor();
-  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}), ...(turns.dropped ? { trimmed: turns.dropped } : {}) };
-  state.chat.messages.push(message);
-  const element = messageElement(message);
+/** The relay lets go of a kept reply: stopped if it is still being written. Once per reply. */
+function forgetReply(run) {
+  if (!run.reply || run.forgotten) return;
+  run.forgotten = true;
+  call(`/v1/replies/${run.reply}`, { method: "DELETE" }).catch(() => {});
+}
+
+const REPLY_ID = /^[0-9a-f]{64}$/;
+/** How long after its last save a reply cut off by a reload is still looked for at the relay (it keeps one 10 minutes after it ended). */
+const CUT_REPLY_MS = 40 * 60 * 1000;
+
+/** Resolves once the page is shown and online: Safari runs nothing for a page in the background. */
+function whenReachable(signal) {
+  return new Promise((resolve, reject) => {
+    const ready = () => !document.hidden && navigator.onLine !== false;
+    const stopped = () => new DOMException("stopped", "AbortError");
+    if (signal.aborted) { reject(stopped()); return; }
+    if (ready()) { resolve(); return; }
+    const done = () => {
+      document.removeEventListener("visibilitychange", check);
+      removeEventListener("online", check);
+      removeEventListener("pageshow", check);
+      signal.removeEventListener("abort", aborted);
+    };
+    const check = () => { if (ready()) { done(); resolve(); } };
+    const aborted = () => { done(); reject(stopped()); };
+    document.addEventListener("visibilitychange", check);
+    addEventListener("online", check);
+    addEventListener("pageshow", check);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+function pause(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException("stopped", "AbortError")); return; }
+    const timer = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, ms);
+    const aborted = () => { clearTimeout(timer); reject(new DOMException("stopped", "AbortError")); };
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+/**
+ * While this tab writes a kept reply, no other tab picks it up (a copy of
+ * this tab's storage after a reload elsewhere would). `wait` false: run
+ * `work` only if no one holds it now.
+ */
+function holdingReply(id, work, wait = true) {
+  if (!navigator.locks?.request) return work();
+  return navigator.locks.request(`fielua-reply-${id}`, wait ? {} : { ifAvailable: true }, (lock) => (lock ? work() : undefined));
+}
+
+/**
+ * A reply being written into `message`: its pace, its checkpoints in the
+ * history, and its end. `known`: the length of text the message already
+ * shows (a reply read again from its start after a reload): until the
+ * reply gets that far again, nothing is redrawn.
+ */
+function beginRun(message, element, chat, known = 0) {
   const entry = state.views.get(message);
   entry.reply.setAttribute("aria-busy", "true");
   const thinking = h("div", { class: "thinking" }, h("span", { class: "glow", "aria-hidden": "true" }), h("span", { class: "label", text: "" }));
-  element.append(thinking);
-  $("messages").append(element);
-  scrollToEnd(true);
-
+  if (!known) element.append(thinking);
   const controller = new AbortController();
   const pacer = new Pacer();
-  const chat = state.chat;
-  const run = { controller, message, chat, pacer, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0 };
+  const run = { controller, message, chat, pacer, entry, thinking, known, shownAt: 0, rendered: -1, lastRender: 0, ended: false, frame: 0, reply: null };
   state.streaming = run;
   updateComposer();
   renderHistory();
   // What has come so far goes into the history every few seconds (a closed tab keeps it, as 停止しました).
   run.checkpoint = setInterval(() => {
-    if (!pacer.text || message.text === pacer.text) return;
+    if (!pacer.text || message.text === pacer.text || pacer.text.length < run.known) return;
     message.text = pacer.text;
     saveChat(chat);
   }, 3000);
 
-  const render = (force = false) => {
+  run.render = (force = false) => {
     const now = performance.now();
+    if (pacer.text.length < run.known && !run.ended) {
+      // Read again from the start: what the message shows already stays as it is until the reply passes it.
+      pacer.shown = pacer.text.length;
+      pacer.lastTick = now / 1000;
+      run.frame = requestAnimationFrame(() => run.render());
+      return;
+    }
     const shown = pacer.advance(now / 1000);
     // About 24 steps a second, fewer as a reply grows very long (the app's ReplyPacer.interval).
     const interval = 1000 / 24 + Math.min(pacer.text.length / 16000, 1) * (100 - 1000 / 24);
@@ -1278,18 +1346,21 @@ async function ask() {
       if (shown > 0 && thinking.isConnected) thinking.remove();
       if (wasPinned) scrollToEnd(false);
     }
-    if (run.ended && pacer.finished) { finish(); return; }
-    run.frame = requestAnimationFrame(() => render());
+    if (run.ended && pacer.finished) { run.finish(); return; }
+    run.frame = requestAnimationFrame(() => run.render());
   };
 
-  const finish = () => {
+  run.finish = () => {
     if (run.finished) return;
     run.finished = true;
     cancelAnimationFrame(run.frame);
+    clearInterval(run.checkpoint);
+    run.unwatch?.();
+    // Read again but ended before it got as far as before (it broke off at the relay): what the message showed stays.
+    if (pacer.text.length < run.known) pacer.text = message.text;
     // The last chunk drawn once more as finished text (unchanged chunks stay as they are).
     pacer.shown = pacer.text.length;
     entry.view.update(pacer.text, { live: false, animate: true });
-    clearInterval(run.checkpoint);
     message.text = pacer.text;
     if (message.end === "streaming") message.end = "done";
     message.activity = null;
@@ -1304,20 +1375,39 @@ async function ask() {
     refreshStatus();
   };
 
-  const fail = (text, end = "failed") => {
+  run.fail = (text, end = "failed") => {
     message.error = text;
     message.end = end;
   };
+  return run;
+}
+
+/** Asks Claude about the conversation so far and lays its reply out as it comes. */
+async function ask() {
+  const { model, effort } = choice();
+  const turns = contextTurns(state.chat.messages);
+  if (!turns.length) return;
+  if (turns.some((turn) => bytes(turn.content) > MAX_TURN_BYTES)) { toast("メッセージが長すぎます。新しい会話でお試しください。"); return; }
+  const tools = toolsFor();
+  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}), ...(turns.dropped ? { trimmed: turns.dropped } : {}) };
+  state.chat.messages.push(message);
+  const element = messageElement(message);
+  $("messages").append(element);
+  scrollToEnd(true);
+  const run = beginRun(message, element, state.chat);
+  const { controller, pacer } = run;
+  // A reply the relay keeps (when it can): Safari's background no longer ends it.
+  const kept = state.status?.resumable === true;
 
   let response;
   try {
-    response = await call("/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort, ...(tools ? { tools } : {}) }, signal: controller.signal });
+    response = await call(kept ? "/v1/replies" : "/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort, ...(tools ? { tools } : {}) }, signal: controller.signal });
   } catch (error) {
     if (error?.name === "AbortError") message.end = "stopped";
-    else fail(errorText(0, "network"));
+    else run.fail(errorText(0, "network"));
     run.ended = true;
     pacer.generating = false;
-    finish();
+    run.finish();
     return;
   }
   if (!response.ok) {
@@ -1361,15 +1451,59 @@ async function ask() {
       showLogin("main", errorText(401, "unauthorized"));
       return;
     }
-    fail(errorText(response.status, body.error, body));
+    run.fail(errorText(response.status, body.error, body));
     run.ended = true;
     pacer.generating = false;
-    finish();
+    run.finish();
     if (body.error === "unavailable") refreshStatus();
     return;
   }
+  const id = response.headers.get("X-Fielua-Reply") ?? "";
+  if (kept && REPLY_ID.test(id)) {
+    run.reply = id;
+    // Kept now, while Claude may still be thinking (no text yet): a reload picks it up again (resumeCutReply).
+    message.reply = id;
+    saveChat(run.chat);
+    await holdingReply(id, () => follow(run, response));
+  } else {
+    await follow(run, response);
+  }
+}
 
-  run.frame = requestAnimationFrame(() => render());
+/**
+ * Safari reloaded the page (it may, after a while in the background) while
+ * a reply was still coming: the relay still has it, so it is read again
+ * from its start into the same message, and on to its end.
+ */
+async function resumeCutReply() {
+  const chat = state.chat;
+  const message = chat.messages[chat.messages.length - 1];
+  const id = message?.role === "assistant" ? message.cutReply : null;
+  if (!id) return;
+  delete message.cutReply;
+  const usable = () => state.chat === chat && isLast(message) && !state.streaming && session.get() && state.views.get(message);
+  if (state.status?.resumable !== true || !usable() || Date.now() - (chat.savedAt ?? 0) > CUT_REPLY_MS) return;
+  await holdingReply(id, async () => {
+    let response;
+    try { response = await call(`/v1/replies/${id}`); } catch { return; }
+    // Gone (ended more than 10 minutes ago, stopped, or the relay restarted): it stays as it was, stopped.
+    if (!response.ok || !response.body || !usable()) { response.body?.cancel().catch(() => {}); return; }
+    const entry = state.views.get(message);
+    const known = message.text.length;
+    Object.assign(message, { end: "streaming", error: undefined, unfinished: false, activity: null, reply: id });
+    if (message.search) message.search = null;
+    if (Array.isArray(message.files)) message.files = [];
+    finishElement(message);
+    const run = beginRun(message, entry.element, chat, known);
+    run.reply = id;
+    await follow(run, response);
+  }, false);
+}
+
+/** Reads a reply's events into its run, to the end; a kept reply over as many connections as it takes. */
+async function follow(run, response) {
+  const { controller, message, chat, pacer, thinking } = run;
+  run.frame = requestAnimationFrame(() => run.render());
   let sawDone = false;
   // The server tools' blocks by index (their input comes in pieces), and whether text follows one.
   const toolBlocks = new Map();
@@ -1381,8 +1515,55 @@ async function ask() {
     message.activity = activity;
     renderWork(message);
   };
+
+  // A kept reply: its connection broken (Safari in the background, a lost network), it is asked for
+  // again once the page is back, and the events go on where they were.
+  const follower = { renew: () => {}, receivedAt: Date.now() };
+  const reopen = !run.reply ? null : async (error) => {
+    if (controller.signal.aborted) throw error;
+    const before = message.activity;
+    working({ kind: "reconnect" });
+    try {
+      for (let attempt = 0; ; attempt++) {
+        await whenReachable(controller.signal);
+        let again = null;
+        try {
+          again = await call(`/v1/replies/${run.reply}`, { signal: controller.signal });
+        } catch (failure) {
+          if (failure?.name === "AbortError") throw failure;
+        }
+        if (again?.ok && again.body) { follower.receivedAt = Date.now(); return again.body; }
+        // Gone at the relay (or the sign-in ran out): ends as any broken reply does.
+        if (again && again.status !== 429 && again.status < 500) throw error;
+        if (attempt >= 5) throw error;
+        await pause(Math.min(1000 * 2 ** attempt, 8000), controller.signal);
+      }
+    } finally {
+      if (message.activity?.kind === "reconnect") working(before);
+    }
+  };
+  if (reopen) {
+    // Back after a while away, or nothing for a minute: a new connection, in case the old one died quietly.
+    let hiddenAt = document.hidden ? Date.now() : 0;
+    const onVisibility = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      if (hiddenAt && Date.now() - hiddenAt >= 3000) follower.renew();
+      hiddenAt = 0;
+    };
+    const stall = setInterval(() => {
+      if (document.hidden || navigator.onLine === false || Date.now() - follower.receivedAt < 60_000) return;
+      follower.receivedAt = Date.now();
+      follower.renew();
+    }, 10_000);
+    document.addEventListener("visibilitychange", onVisibility);
+    run.unwatch = () => {
+      clearInterval(stall);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }
+
   try {
-    for await (const event of readEvents(response.body)) {
+    for await (const event of readEvents(response.body, reopen, follower)) {
       if (event.type === "started") { message.served = event.model; keepContainer(event.container); }
       else if (event.type === "thinking") {
         const label = thinking.querySelector(".label");
@@ -1425,25 +1606,29 @@ async function ask() {
       else if (event.type === "refused") message.end = "refused";
       else if (event.type === "cutOff") message.end = "cutOff";
       else if (event.type === "failed") {
-        fail(event.error === "overloaded_error"
+        run.fail(event.error === "overloaded_error"
           ? "Claude が混み合っているため、返信が途中で止まりました。ここまでの返信は残しています。"
           : "Claude との接続が切れました。ここまでの返信は残しています。");
       } else if (event.type === "done") { sawDone = true; break; }
     }
-    if (!sawDone && !message.error && message.end === "streaming") fail("Claude との接続が切れました。ここまでの返信は残しています。");
+    if (!sawDone && !message.error && message.end === "streaming") run.fail("Claude との接続が切れました。ここまでの返信は残しています。");
   } catch (error) {
     if (error?.name === "AbortError" || controller.signal.aborted) {
       message.end = "stopped";
     } else if (!message.error) {
-      fail("Claude との接続が切れました。ここまでの返信は残しています。");
+      run.fail("Claude との接続が切れました。ここまでの返信は残しています。");
     }
   }
+  run.unwatch?.();
+  // The page has the reply (or it is over): the relay lets go of it.
+  forgetReply(run);
+  delete message.reply;
   if (controller.signal.aborted && message.end === "streaming") message.end = "stopped";
   pacer.generating = false;
   run.ended = true;
   // Stopped: what has come shows at once, nothing more is laid out.
   if (message.end === "stopped" || document.hidden) pacer.shown = pacer.text.length;
-  if (document.hidden) finish();
+  if (document.hidden) run.finish();
 }
 
 // MARK: Scrolling

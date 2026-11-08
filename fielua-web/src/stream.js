@@ -80,22 +80,83 @@ export function streamEvent(line) {
   }
 }
 
-/** The events of a streamed response body, as they come. */
-export async function* readEvents(body) {
-  const reader = body.getReader();
+/**
+ * The events of a streamed response body, as they come.
+ *
+ * With `reopen` (a reply the relay keeps, /v1/replies), a broken
+ * connection is not the end: `reopen(error)` gives the same reply again
+ * from its first byte, and the events go on after the bytes already read,
+ * as if nothing had happened; it throws when the reply can't be had any
+ * more. `follow.renew()` swaps the connection for a new one the same way
+ * (after the page was away, when the old one may be dead without saying
+ * so). A connection that ends before the reply's end counts as broken,
+ * once for each that brought something new; four breaks in a row with
+ * nothing new between them, and it is over.
+ */
+export async function* readEvents(body, reopen = null, follow = null) {
+  let reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // Bytes of the reply read so far, and of a new connection's start still to pass over (read before).
+  let received = 0;
+  let skip = 0;
+  let renewing = false;
+  let ended = false;
+  let freshSinceReopen = true;
+  let fruitless = 0;
+  if (follow) {
+    follow.renew = () => {
+      if (!reopen || renewing || ended) return;
+      renewing = true;
+      reader.cancel().catch(() => {});
+    };
+  }
+  const again = async (error) => {
+    // A swap the page asked for is no sign of trouble; a break is.
+    if (!renewing) fruitless = freshSinceReopen ? 0 : fruitless + 1;
+    if (fruitless >= 4) throw error;
+    try { reader.releaseLock(); } catch { /* still reading: it goes with its connection */ }
+    const next = await reopen(error);
+    reader = next.getReader();
+    skip = received;
+    renewing = false;
+    freshSinceReopen = false;
+  };
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      let next;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        if (!reopen || error?.name === "AbortError") throw error;
+        await again(error);
+        continue;
+      }
+      if (next.done) {
+        if (reopen && !ended && (renewing || freshSinceReopen)) {
+          await again(new TypeError("cut off"));
+          continue;
+        }
+        break;
+      }
+      let value = next.value;
+      if (skip > 0) {
+        if (value.length <= skip) { skip -= value.length; continue; }
+        value = value.subarray(skip);
+        skip = 0;
+      }
+      received += value.length;
+      freshSinceReopen = true;
+      if (follow) follow.receivedAt = Date.now();
       buffer += decoder.decode(value, { stream: true });
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
         const event = streamEvent(line);
-        if (event) yield event;
+        if (!event) continue;
+        if (event.type === "done" || event.type === "failed") ended = true;
+        yield event;
       }
     }
     buffer += decoder.decode();
@@ -104,6 +165,7 @@ export async function* readEvents(body) {
       if (event) yield event;
     }
   } finally {
+    if (follow) follow.renew = () => {};
     reader.releaseLock?.();
   }
 }

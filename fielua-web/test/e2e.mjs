@@ -9,6 +9,7 @@
 
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { connect, createServer as createCable } from "node:net";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +35,8 @@ function check(name, ok, detail = "") {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // MARK: The stand-in for Anthropic
+
+const DEEP = "途中で切れても、考え直さずに最後まで書きました。".repeat(4);
 
 const MD = [
   "## 東京の週末プラン",
@@ -85,7 +88,7 @@ const OFFERED = {
   "claude-sonnet-5-5": ["low", "medium", "high", "xhigh"],
 };
 
-const upstream = { requests: [], closedEarly: 0, files: [] };
+const upstream = { requests: [], closedEarly: 0, files: [], asked: [] };
 // The files a reply's code made, as the Files API keeps them (the chart's picture is drawn in the browser later).
 const MADE = {
   file_e2e_report: { filename: "週末の予定.csv", mime_type: "text/csv", bytes: Buffer.from("日程,場所,費用\n土曜,浅草,1200\n日曜,上野,2000\n") },
@@ -170,6 +173,7 @@ const anthropic = createServer((req, res) => {
     const lastContent = body.messages.at(-1).content;
     // A message with attachments: its text is the last block.
     const question = (typeof lastContent === "string" ? lastContent : (lastContent.filter((b) => b.type === "text").at(-1)?.text ?? "")).trim();
+    upstream.asked.push(question);
     if (question === "billing") {
       res.writeHead(402, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "billing_error", message: "Your credit balance is too low." } }));
@@ -214,6 +218,12 @@ const anthropic = createServer((req, res) => {
       for (let i = 0; i < 20; i++) pieces.push({ thinking: "…" });
       reply = "考えた結果、答えは 42 です。";
     }
+    if (question === "deep") {
+      // A long think (3 seconds), then the reply: the connection is cut while it thinks.
+      for (let i = 0; i < 30; i++) pieces.push({ thinking: "…" });
+      reply = DEEP;
+      every = 100;
+    }
     for (let i = 0; i < reply.length; i += pieceSize) pieces.push({ text: reply.slice(i, i + pieceSize) });
     if (question === "overload") pieces.splice(3, pieces.length, { error: "overloaded_error" });
     let started = null;
@@ -257,7 +267,22 @@ const anthropicPort = anthropic.address().port;
 
 const webPort = 19000 + Math.floor(Math.random() * 500);
 const relayPort = 18500 + Math.floor(Math.random() * 400);
-const relay = `http://127.0.0.1:${relayPort}`;
+// The page reaches the relay over a cable the test can cut, as Safari drops a page's connections in the background.
+const cablePort = 17500 + Math.floor(Math.random() * 400);
+const relay = `http://127.0.0.1:${cablePort}`;
+const cable = { sockets: new Set(), refuse: false, replyGets: 0 };
+cable.cut = () => { for (const socket of cable.sockets) socket.destroy(); };
+const cableServer = createCable((client) => {
+  if (cable.refuse) { client.destroy(); return; }
+  const far = connect(relayPort, "127.0.0.1");
+  cable.sockets.add(client);
+  client.on("data", (chunk) => { if (/^GET \/v1\/replies\/[0-9a-f]{64} /m.test(chunk.toString("latin1"))) cable.replyGets++; });
+  client.pipe(far).pipe(client);
+  const close = () => { cable.sockets.delete(client); client.destroy(); far.destroy(); };
+  client.on("error", close).on("close", close);
+  far.on("error", close).on("close", close);
+});
+await new Promise((resolve) => cableServer.listen(cablePort, "127.0.0.1", resolve));
 execFileSync("node", ["build.mjs"], { cwd: root, env: { ...process.env, RELAY_URL: relay, OUT_DIR: "dist-test", NO_ZIP: "1" }, stdio: "inherit" });
 const site = join(root, "dist-test", "chat");
 const htaccess = readFileSync(join(site, ".htaccess"), "utf8");
@@ -543,6 +568,74 @@ try {
   await sendMessage(dev, "overload");
   await waitReply(dev);
   check("a reply broken off says so and keeps what came", (await lastReply(dev).locator(".notice").textContent()).includes("混み合っている"));
+
+  // MARK: Safari in the background: the connection drops while Claude thinks, and the reply goes on
+  const replyIDs = [];
+  dev.on("response", (response) => { const id = response.headers()["x-fielua-reply"]; if (id && !replyIDs.includes(id)) replyIDs.push(id); });
+  const asked = (question) => upstream.asked.filter((q) => q === question).length;
+  const keptAtRelay = (id) => dev.evaluate(async ([relayURL, replyID]) => {
+    const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
+    return (await fetch(`${relayURL}/v1/replies/${replyID}`, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }, [relay, id]);
+  const replyDone = (page) => page.waitForFunction((text) => document.querySelector(".msg.assistant:last-child .reply")?.textContent === text
+    && !document.querySelector("#composer").classList.contains("streaming"), DEEP, { timeout: 30000 });
+  await dev.evaluate(() => {
+    window.__work = [];
+    new MutationObserver(() => {
+      const text = document.querySelector(".msg.assistant:last-child .work")?.textContent ?? "";
+      if (text && window.__work.at(-1) !== text) window.__work.push(text);
+    }).observe(document.getElementById("messages"), { subtree: true, childList: true, characterData: true });
+  });
+  const closedBeforeDeep = upstream.closedEarly;
+  await sendMessage(dev, "deep");
+  await dev.waitForSelector(".msg.assistant:last-child .thinking .label:not(:empty)", { timeout: 5000 });
+  cable.refuse = true;
+  cable.cut();
+  await sleep(1500);
+  check("cut off while Claude thinks: the page says it is reconnecting", (await dev.evaluate(() => window.__work)).includes("つなぎ直しています…"), JSON.stringify(await dev.evaluate(() => window.__work)));
+  cable.refuse = false;
+  await replyDone(dev);
+  const deepCaption = await lastReply(dev).locator(".caption").textContent();
+  check("once the connection is back, the reply comes whole", (await lastReply(dev).locator(".reply").textContent()) === DEEP);
+  check("Claude thought once: asked once at Anthropic, never stopped there", asked("deep") === 1 && upstream.closedEarly === closedBeforeDeep, `${asked("deep")} ${upstream.closedEarly - closedBeforeDeep}`);
+  check("no error, and not marked stopped", (await lastReply(dev).locator(".notice").count()) === 0 && !deepCaption.includes("停止しました"), deepCaption);
+  await sleep(300);
+  check("the page has it: the relay lets go of it", replyIDs.length === 1 && (await keptAtRelay(replyIDs[0])) === 404);
+
+  // Back after a while away (the old connection may have died without a word): a new one, nothing lost.
+  await sendMessage(dev, "deep");
+  await dev.waitForSelector(".msg.assistant:last-child .thinking .label:not(:empty)", { timeout: 5000 });
+  const getsBefore = cable.replyGets;
+  await dev.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await sleep(3300);
+  await dev.evaluate(() => {
+    delete document.hidden;
+    delete document.visibilityState;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await replyDone(dev);
+  check("back from the background: a new connection, and the reply whole", cable.replyGets === getsBefore + 1 && (await lastReply(dev).locator(".reply").textContent()) === DEEP, `${cable.replyGets - getsBefore}`);
+  check("still thought once", asked("deep") === 2 && upstream.closedEarly === closedBeforeDeep);
+
+  // Safari reloaded the page while Claude was thinking: the reply is picked up again, into the same place.
+  await sendMessage(dev, "deep");
+  await dev.waitForSelector(".msg.assistant:last-child .thinking .label:not(:empty)", { timeout: 5000 });
+  const repliesBeforeReload = await dev.locator(".msg.assistant").count();
+  await sleep(500);
+  await dev.reload();
+  await replyDone(dev);
+  const reloadedCaption = await lastReply(dev).locator(".caption").textContent();
+  check("reloaded while thinking: the reply goes on and comes whole", (await lastReply(dev).locator(".reply").textContent()) === DEEP && !reloadedCaption.includes("停止しました") &&
+    (await dev.locator(".msg.assistant").count()) === repliesBeforeReload, reloadedCaption);
+  check("asked once, never stopped at Anthropic", asked("deep") === 3 && upstream.closedEarly === closedBeforeDeep);
+  await sleep(300);
+  check("and the relay lets go of it once the page has it", replyIDs.length === 3 && (await keptAtRelay(replyIDs[2])) === 404);
+  const keptCopy = await dev.evaluate(() => JSON.parse(sessionStorage.getItem("fielua.chat")).messages.at(-1));
+  check("kept as a finished reply (no id left behind)", keptCopy.end === "done" && keptCopy.text === DEEP && !("reply" in keptCopy), JSON.stringify(keptCopy).slice(0, 200));
 
   // MARK: Photos, a video and files, as the iPhone app attaches them
   // A large photo with its location in it (an Exif block), made in the browser.
@@ -1155,6 +1248,8 @@ try {
   stopRelay();
   web.close();
   anthropic.close();
+  cable.cut();
+  cableServer.close();
 }
 
 const failedChecks = results.filter((r) => !r.ok);
