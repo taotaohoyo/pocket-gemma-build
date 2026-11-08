@@ -81,7 +81,7 @@ export class Reply extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.keeper = new ReplyKeeper(ctx.id.toString());
+    this.keeper = new ReplyKeeper();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -90,6 +90,7 @@ export class Reply extends DurableObject<Env> {
 
   async again(owner: string): Promise<Response> {
     const kept = this.keeper.again(owner);
+    if (kept === "not_ready") return json(409, { error: "not_ready" });
     if (!kept) return json(404, { error: "not_found" });
     return new Response(kept.body, { status: 200, headers: kept.headers });
   }
@@ -103,25 +104,18 @@ function registry(env: Env): DurableObjectStub<Registry> {
   return env.REGISTRY.get(env.REGISTRY.idFromName("registry"));
 }
 
-/** The replies' objects as the edge reaches them: a new one for each reply, found again by its id. */
+/** The replies' objects as the edge reaches them: one for each person and key the page picked. */
 function replies(env: Env): ReplyHub {
-  const object = (id: string) => {
-    try {
-      return env.REPLY.get(env.REPLY.idFromString(id));
-    } catch {
-      return null;
-    }
-  };
+  const object = (key: string, owner: string) => env.REPLY.get(env.REPLY.idFromName(`${owner}:${key}`));
   return {
-    async start(request) {
-      return env.REPLY.get(env.REPLY.newUniqueId()).fetch(request);
+    async start(request, key, owner) {
+      return object(key, owner).fetch(request);
     },
-    async again(id, owner) {
-      return (await object(id)?.again(owner)) ?? json(404, { error: "not_found" });
+    async again(key, owner) {
+      return object(key, owner).again(owner);
     },
-    async end(id, owner) {
-      const ended = (await object(id)?.end(owner)) ?? false;
-      return ended ? json(200, { ended: true }) : json(404, { error: "not_found" });
+    async end(key, owner) {
+      return (await object(key, owner).end(owner)) ? json(200, { ended: true }) : json(404, { error: "not_found" });
     },
   };
 }

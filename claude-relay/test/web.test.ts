@@ -482,19 +482,28 @@ describe("chatting from the web", () => {
 
 // MARK: Replies a dropped connection doesn't end
 
-/** Timers the test runs by hand. */
+/** Timers and a clock the test runs by hand. */
 function handTimers() {
-  const pending = new Map<number, { run: () => void; ms: number }>();
+  const pending = new Map<number, { run: () => void; at: number }>();
+  const clock = { now: 0 };
   let next = 1;
   const timers: Timers = {
-    set: (run, ms) => { pending.set(next, { run, ms }); return next++; },
+    set: (run, ms) => { pending.set(next, { run, at: clock.now + ms }); return next++; },
     clear: (handle) => { pending.delete(handle as number); },
   };
-  /** Runs the timers set for `ms` (as if that long had passed for each). */
-  const fire = (ms: number) => {
-    for (const [id, timer] of [...pending]) if (timer.ms === ms) { pending.delete(id); timer.run(); }
+  /** Time goes on by `ms`, and the timers due by then run in turn. */
+  const pass = (ms: number) => {
+    const until = clock.now + ms;
+    for (;;) {
+      const due = [...pending].filter(([, timer]) => timer.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      pending.delete(due[0]);
+      clock.now = due[1].at;
+      due[1].run();
+    }
+    clock.now = until;
   };
-  return { timers, fire, pending };
+  return { timers, pass, pending, now: () => clock.now };
 }
 
 /** A reply Anthropic writes when the test says: each piece, then the end. */
@@ -512,23 +521,29 @@ async function readAll(body: ReadableStream<Uint8Array> | null): Promise<string>
   return body ? await new Response(body).text() : "";
 }
 
-/** The edge and the replies' objects, in this process: one keeper per reply, as index.ts makes one object per reply. */
-function stubHub(timers: Timers) {
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const KEY = "0123456789abcdef0123456789abcdef";
+const MINUTE = 60 * 1000;
+
+/** The edge and the replies' objects, in this process: one keeper for each person and key, as index.ts finds one object for each. */
+function stubHub(timers: Timers, now: () => number) {
   const keepers = new Map<string, ReplyKeeper>();
-  let made = 0;
+  const keeper = (key: string, owner: string) => {
+    const name = `${owner}:${key}`;
+    if (!keepers.has(name)) keepers.set(name, new ReplyKeeper(timers, now));
+    return keepers.get(name)!;
+  };
   const hub: ReplyHub = {
-    async start(request) {
-      const id = (++made).toString(16).padStart(64, "0");
-      const keeper = new ReplyKeeper(id, timers);
-      keepers.set(id, keeper);
-      return replyInObject(request, h.env, { ...h.deps, replies: undefined, keeper });
+    async start(request, key, owner) {
+      return replyInObject(request, h.env, { ...h.deps, replies: undefined, keeper: keeper(key, owner) });
     },
-    async again(id, owner) {
-      const kept = keepers.get(id)?.again(owner);
+    async again(key, owner) {
+      const kept = keeper(key, owner).again(owner);
+      if (kept === "not_ready") return json(409, { error: "not_ready" });
       return kept ? new Response(kept.body, { status: 200, headers: kept.headers }) : json(404, { error: "not_found" });
     },
-    async end(id, owner) {
-      return keepers.get(id)?.end(owner) ? json(200, { ended: true }) : json(404, { error: "not_found" });
+    async end(key, owner) {
+      return keeper(key, owner).end(owner) ? json(200, { ended: true }) : json(404, { error: "not_found" });
     },
   };
   return { hub, keepers };
@@ -536,9 +551,10 @@ function stubHub(timers: Timers) {
 
 describe("a reply a dropped connection doesn't end", () => {
   it("is kept: the page reads it again from its first byte, with what is still coming", async () => {
-    const { timers, pending } = handTimers();
-    const keeper = new ReplyKeeper("a".repeat(64), timers);
-    const signal = keeper.begin("u1");
+    const { timers, now } = handTimers();
+    const keeper = new ReplyKeeper(timers, now);
+    const signal = keeper.begin("u1", KEY)!;
+    expect(keeper.again("u1")).toBe("not_ready");
     const anthropic = writtenByHand();
     const live = keeper.hold(anthropic.stream, { "X-Fielua-Model": "claude-opus-5-5" });
     anthropic.write("event: message_start\n");
@@ -550,54 +566,72 @@ describe("a reply a dropped connection doesn't end", () => {
     expect(signal.aborted).toBe(false);
     anthropic.write("data: 考えています\n");
     expect(keeper.again("u2")).toBeNull();
-    const again = keeper.again("u1")!;
-    expect(again.headers).toMatchObject({ "X-Fielua-Model": "claude-opus-5-5", "X-Fielua-Reply": "a".repeat(64) });
+    const again = keeper.again("u1") as { body: ReadableStream<Uint8Array>; headers: Record<string, string> };
+    expect(again.headers).toMatchObject({ "X-Fielua-Model": "claude-opus-5-5", "X-Fielua-Reply": KEY });
     anthropic.write("data: 続き\n");
     anthropic.end();
-    expect(await readAll(again.body as ReadableStream<Uint8Array>)).toBe("event: message_start\ndata: 考えています\ndata: 続き\n");
+    expect(await readAll(again.body)).toBe("event: message_start\ndata: 考えています\ndata: 続き\n");
     // Ended: the whole reply, kept for a while for a page that hasn't come back.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const whole = keeper.again("u1")!;
-    expect(new TextDecoder().decode(whole.body as Uint8Array)).toBe("event: message_start\ndata: 考えています\ndata: 続き\n");
-    expect([...pending.values()].map((timer) => timer.ms).sort()).toEqual([10 * 60 * 1000, 30 * 60 * 1000].sort());
+    await settle();
+    const whole = keeper.again("u1") as { body: Uint8Array };
+    expect(new TextDecoder().decode(whole.body)).toBe("event: message_start\ndata: 考えています\ndata: 続き\n");
   });
 
-  it("goes 10 minutes after it ended, or 30 minutes after it began, or when the page says so", async () => {
-    const { timers, fire, pending } = handTimers();
-    const ended = new ReplyKeeper("b".repeat(64), timers);
-    ended.begin("u1");
+  it("goes 10 minutes after it ended or 30 after it began, keeping its object alive by a new timer every 5 minutes", async () => {
+    const { timers, pass, pending, now } = handTimers();
+    const ended = new ReplyKeeper(timers, now);
+    ended.begin("u1", KEY);
     const anthropic = writtenByHand();
     void readAll(ended.hold(anthropic.stream, {}));
+    // Never more than 5 minutes without a timer of its own (Cloudflare counts 15 minutes from each one's start).
+    expect([...pending.values()].map((timer) => timer.at)).toEqual([5 * MINUTE]);
+    pass(12 * MINUTE);
+    expect(ended.holding).toBe(true);
+    expect([...pending.values()].map((timer) => timer.at)).toEqual([15 * MINUTE]);
     anthropic.write("data: x\n");
     anthropic.end();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
+    pass(9 * MINUTE);
     expect(ended.holding).toBe(true);
-    fire(10 * 60 * 1000);
+    pass(1 * MINUTE);
     expect(ended.holding).toBe(false);
     expect(ended.again("u1")).toBeNull();
     expect(pending.size).toBe(0);
 
-    const old = new ReplyKeeper("c".repeat(64), timers);
-    const signal = old.begin("u1");
+    const { timers: timers2, pass: pass2, pending: pending2, now: now2 } = handTimers();
+    const old = new ReplyKeeper(timers2, now2);
+    const signal = old.begin("u1", KEY)!;
     void readAll(old.hold(writtenByHand().stream, {}));
-    fire(30 * 60 * 1000);
+    pass2(29 * MINUTE);
+    expect(signal.aborted).toBe(false);
+    pass2(1 * MINUTE);
     expect(signal.aborted).toBe(true);
     expect(old.holding).toBe(false);
-
-    const stopped = new ReplyKeeper("d".repeat(64), timers);
-    const stopSignal = stopped.begin("u1");
-    void readAll(stopped.hold(writtenByHand().stream, {}));
-    expect(stopped.end("u2")).toBe(false);
-    expect(stopSignal.aborted).toBe(false);
-    expect(stopped.end("u1")).toBe(true);
-    expect(stopSignal.aborted).toBe(true);
-    expect(stopped.again("u1")).toBeNull();
-    expect(pending.size).toBe(0);
+    expect(pending2.size).toBe(0);
   });
 
-  it("is asked at /v1/replies: checked at the edge, then kept, and never stopped by the page's connection", async () => {
-    const { timers } = handTimers();
-    const { hub, keepers } = stubHub(timers);
+  it("stops when the page says so, even before it began", () => {
+    const { timers, pending, now } = handTimers();
+    const stopped = new ReplyKeeper(timers, now);
+    const signal = stopped.begin("u1", KEY)!;
+    void readAll(stopped.hold(writtenByHand().stream, {}));
+    expect(stopped.end("u2")).toBe(false);
+    expect(signal.aborted).toBe(false);
+    expect(stopped.end("u1")).toBe(true);
+    expect(signal.aborted).toBe(true);
+    expect(stopped.again("u1")).toBeNull();
+    expect(pending.size).toBe(0);
+
+    // The page's 停止 overtook its question: the question, when it comes, asks nothing.
+    const early = new ReplyKeeper(timers, now);
+    expect(early.end("u1")).toBe(false);
+    expect(early.begin("u1", KEY)).toBeNull();
+    expect(early.holding).toBe(false);
+  });
+
+  it("is asked at /v1/replies/:key: checked at the edge, then kept, and never stopped by the page's connection", async () => {
+    const { timers, now } = handTimers();
+    const { hub, keepers } = stubHub(timers, now);
     h.deps.replies = hub;
     const anthropic = writtenByHand();
     let sentSignal: AbortSignal | undefined;
@@ -607,17 +641,18 @@ describe("a reply a dropped connection doesn't end", () => {
       return new Response(anthropic.stream, { headers: { "Content-Type": "text/event-stream" } });
     };
     // No one else gets a reply object started.
-    expect((await call("POST", "/v1/replies", { body: hello })).status).toBe(401);
+    expect((await call("POST", `/v1/replies/${KEY}`, { body: hello })).status).toBe(401);
     expect(keepers.size).toBe(0);
 
     const developer = await signUp("開発者", "developer");
     expect((await (await call("GET", "/v1/status", { token: developer })).json() as { resumable: boolean }).resumable).toBe(true);
+    expect((await call("POST", "/v1/replies/NOT-A-KEY", { token: developer, body: hello })).status).toBe(404);
+    expect(keepers.size).toBe(0);
     const page = new AbortController();
     const headers = { Authorization: `Bearer ${developer}`, Origin: WEB, "Content-Type": "application/json" };
-    const reply = await handle(new Request(`${BASE}/v1/replies`, { method: "POST", headers, body: JSON.stringify(hello), signal: page.signal }), h.env, h.deps);
+    const reply = await handle(new Request(`${BASE}/v1/replies/${KEY}`, { method: "POST", headers, body: JSON.stringify(hello), signal: page.signal }), h.env, h.deps);
     expect(reply.status).toBe(200);
-    const id = reply.headers.get("X-Fielua-Reply")!;
-    expect(id).toMatch(/^[0-9a-f]{64}$/);
+    expect(reply.headers.get("X-Fielua-Reply")).toBe(KEY);
     expect(reply.headers.get("Access-Control-Expose-Headers")).toContain("X-Fielua-Reply");
     expect(reply.headers.get("Vary")).toBe("Origin");
     expect(h.calls).toHaveLength(1);
@@ -628,26 +663,27 @@ describe("a reply a dropped connection doesn't end", () => {
 
     const friendsOn = await call("POST", "/admin/settings", { token: ADMIN, body: { friendsEnabled: true }, origin: null });
     expect(friendsOn.status).toBe(200);
+    // The same key from someone else is another object, with nothing in it.
     const friend = await signUp("友人", "friend");
-    expect((await call("GET", `/v1/replies/${id}`, { token: friend })).status).toBe(404);
-    expect((await call("DELETE", `/v1/replies/${id}`, { token: friend })).status).toBe(404);
-    expect((await call("GET", `/v1/replies/${id}`)).status).toBe(401);
-    expect((await call("GET", "/v1/replies/not-an-id", { token: developer })).status).toBe(404);
+    expect((await call("GET", `/v1/replies/${KEY}`, { token: friend })).status).toBe(404);
+    expect((await call("DELETE", `/v1/replies/${KEY}`, { token: friend })).status).toBe(404);
+    expect((await call("GET", `/v1/replies/${KEY}`)).status).toBe(401);
+    expect((await call("GET", "/v1/replies/not-a-key", { token: developer })).status).toBe(404);
     expect(sentSignal!.aborted).toBe(false);
 
-    const again = await call("GET", `/v1/replies/${id}`, { token: developer });
+    const again = await call("GET", `/v1/replies/${KEY}`, { token: developer });
     expect(again.status).toBe(200);
     expect(again.headers.get("Access-Control-Allow-Origin")).toBe(WEB);
     anthropic.write("data: 2\n");
     anthropic.end();
     expect(await again.text()).toBe("data: 1\ndata: 2\n");
-    expect((await call("DELETE", `/v1/replies/${id}`, { token: developer })).status).toBe(200);
-    expect((await call("GET", `/v1/replies/${id}`, { token: developer })).status).toBe(404);
+    expect((await call("DELETE", `/v1/replies/${KEY}`, { token: developer })).status).toBe(200);
+    expect((await call("GET", `/v1/replies/${KEY}`, { token: developer })).status).toBe(404);
   });
 
-  it("stops at Anthropic when the page says 停止, and keeps nothing when Anthropic refuses", async () => {
-    const { timers } = handTimers();
-    const { hub, keepers } = stubHub(timers);
+  it("stops at Anthropic when the page says 停止, asks nothing when 停止 came first, and keeps nothing when Anthropic refuses", async () => {
+    const { timers, now } = handTimers();
+    const { hub, keepers } = stubHub(timers, now);
     h.deps.replies = hub;
     let sentSignal: AbortSignal | undefined;
     h.deps.claude = async (_cfg, choice, turns, _user, signal) => {
@@ -656,14 +692,20 @@ describe("a reply a dropped connection doesn't end", () => {
       return new Response(writtenByHand().stream, { headers: { "Content-Type": "text/event-stream" } });
     };
     const developer = await signUp("開発者", "developer");
-    const reply = await call("POST", "/v1/replies", { token: developer, body: hello });
-    const id = reply.headers.get("X-Fielua-Reply")!;
-    expect((await call("DELETE", `/v1/replies/${id}`, { token: developer })).status).toBe(200);
+    await call("POST", `/v1/replies/${KEY}`, { token: developer, body: hello });
+    expect((await call("DELETE", `/v1/replies/${KEY}`, { token: developer })).status).toBe(200);
     expect(sentSignal!.aborted).toBe(true);
-    expect(keepers.get(id)!.holding).toBe(false);
+    expect([...keepers.values()].some((keeper) => keeper.holding)).toBe(false);
+
+    const second = "fedcba9876543210fedcba9876543210";
+    expect((await call("DELETE", `/v1/replies/${second}`, { token: developer })).status).toBe(404);
+    const calls = h.calls.length;
+    const late = await call("POST", `/v1/replies/${second}`, { token: developer, body: hello });
+    expect(late.status).toBe(409);
+    expect(h.calls).toHaveLength(calls);
 
     h.deps.claude = async () => { throw new Error("unreachable"); };
-    const refused = await call("POST", "/v1/replies", { token: developer, body: hello });
+    const refused = await call("POST", `/v1/replies/${"a".repeat(32)}`, { token: developer, body: hello });
     expect(refused.status).toBe(502);
     expect(refused.headers.get("X-Fielua-Reply")).toBeNull();
     expect([...keepers.values()].some((keeper) => keeper.holding)).toBe(false);
@@ -672,8 +714,8 @@ describe("a reply a dropped connection doesn't end", () => {
   it("is not offered without the replies' objects (the tests' default), and /v1/messages is as it was", async () => {
     const developer = await signUp("開発者", "developer");
     expect((await (await call("GET", "/v1/status", { token: developer })).json() as { resumable: boolean }).resumable).toBe(false);
-    expect((await call("POST", "/v1/replies", { token: developer, body: hello })).status).toBe(404);
-    expect((await call("GET", `/v1/replies/${"0".repeat(64)}`, { token: developer })).status).toBe(404);
+    expect((await call("POST", `/v1/replies/${KEY}`, { token: developer, body: hello })).status).toBe(404);
+    expect((await call("GET", `/v1/replies/${KEY}`, { token: developer })).status).toBe(404);
     const reply = await call("POST", "/v1/messages", { token: developer, body: hello });
     expect(reply.status).toBe(200);
     expect(reply.headers.get("X-Fielua-Reply")).toBeNull();

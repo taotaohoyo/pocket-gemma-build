@@ -321,10 +321,11 @@ try {
   // A reply a dropped connection doesn't end (Fielua for the web, Safari in the background)
   check("the relay says replies can be read again", (await (await api("GET", "/v1/status", { token })).json()).resumable === true);
   const count = (list, question) => list.filter((q) => q === question).length;
+  const newKey = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const dropping = new AbortController();
-  const kept = await api("POST", "/v1/replies", { token, body: ask("slow-kept"), signal: dropping.signal });
-  const replyID = kept.headers.get("x-fielua-reply") ?? "";
-  check("a kept reply streams, with its id", kept.status === 200 && /^[0-9a-f]{64}$/.test(replyID), `${kept.status} ${replyID}`);
+  const replyID = newKey();
+  const kept = await api("POST", `/v1/replies/${replyID}`, { token, body: ask("slow-kept"), signal: dropping.signal });
+  check("a kept reply streams, under the key the page chose", kept.status === 200 && kept.headers.get("x-fielua-reply") === replyID, `${kept.status}`);
   const keptReader = kept.body.getReader();
   let firstBytes = new Uint8Array(0);
   while (firstBytes.length < 400) {
@@ -336,10 +337,10 @@ try {
   await sleep(1200);
   check("the connection dropped: Anthropic goes on writing", !count(upstream.cut, "slow-kept") && !count(upstream.ended, "slow-kept"),
     JSON.stringify({ cut: count(upstream.cut, "slow-kept"), ended: count(upstream.ended, "slow-kept") }));
-  check("someone else can't read it", (await api("GET", `/v1/replies/${replyID}`, { token: friend })).status === 404);
+  check("someone else can't read it, even with its key", (await api("GET", `/v1/replies/${replyID}`, { token: friend })).status === 404);
   check("nor anyone without a key", (await api("GET", `/v1/replies/${replyID}`)).status === 401);
-  check("a made-up id is not found", (await api("GET", `/v1/replies/${"0".repeat(64)}`, { token })).status === 404 &&
-    (await api("GET", "/v1/replies/nonsense", { token })).status === 404);
+  check("a made-up key is not found", (await api("GET", `/v1/replies/${newKey()}`, { token })).status === 404 &&
+    (await api("GET", "/v1/replies/nonsense", { token })).status === 404 && (await api("POST", "/v1/replies/nonsense", { token, body: ask("x") })).status === 404);
   const again = await api("GET", `/v1/replies/${replyID}`, { token });
   const againReader = again.body.getReader();
   const againFirst = await againReader.read();
@@ -359,8 +360,8 @@ try {
   check("after the end, the whole reply once more", afterEnd.status === 200 && (await afterEnd.text()) === againText);
   check("the page says it has it: forgotten", (await api("DELETE", `/v1/replies/${replyID}`, { token })).status === 200 &&
     (await api("GET", `/v1/replies/${replyID}`, { token })).status === 404 && (await api("DELETE", `/v1/replies/${replyID}`, { token })).status === 404);
-  const stopping = await api("POST", "/v1/replies", { token, body: ask("slow-stop") });
-  const stopID = stopping.headers.get("x-fielua-reply") ?? "";
+  const stopID = newKey();
+  const stopping = await api("POST", `/v1/replies/${stopID}`, { token, body: ask("slow-stop") });
   await stopping.body.getReader().read();
   check("someone else can't stop it", (await api("DELETE", `/v1/replies/${stopID}`, { token: friend })).status === 404);
   const stopped = await api("DELETE", `/v1/replies/${stopID}`, { token });
@@ -371,6 +372,11 @@ try {
   }
   check("停止 (DELETE) stops it at Anthropic", stopped.status === 200 && stoppedAtAnthropic);
   check("and it is gone", (await api("GET", `/v1/replies/${stopID}`, { token })).status === 404);
+  const earlyID = newKey();
+  const earlyStop = await api("DELETE", `/v1/replies/${earlyID}`, { token });
+  const asksBefore = upstream.requests.length;
+  const late = await api("POST", `/v1/replies/${earlyID}`, { token, body: ask("slow-late") });
+  check("停止 that overtook its question: the question asks nothing", earlyStop.status === 404 && late.status === 409 && upstream.requests.length === asksBefore);
 
   const state1 = await (await api("GET", "/admin/state", { token: ADMIN })).json();
   const friendID = state1.users.find((u) => u.role === "friend").id;
