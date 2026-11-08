@@ -1,9 +1,14 @@
-// What a reply cost, read off Anthropic's event stream as it passes
-// through: the usage in message_start and message_delta, nothing of the
-// text itself (a stopped reply's unfinished part is counted by its
-// length, as an estimate). And the files code execution made, and the
-// container they are in, so only the person who asked can download them.
-// The events reach the app unchanged.
+// What a reply cost, read off Anthropic's event stream: the usage in
+// message_start and message_delta (a stopped reply's unfinished part is
+// counted by its length, as an estimate). And the files code execution
+// made, and the container they are in, so only the person who asked can
+// download them. The events reach the app unchanged.
+//
+// The stream is split in two (tee): one copy goes to the app as it comes,
+// with no code of the relay's in its way; the other is gathered by the
+// runtime itself and read once, when the reply ends. Reading every event
+// as it passed cost CPU for each piece of a long reply, more than
+// Cloudflare's free plan gives a request (10 ms).
 
 import { costMicros, type Usage } from "./claude";
 
@@ -49,122 +54,144 @@ export function estimateTokens(text: string): number {
   return Math.ceil(ascii / 4 + other);
 }
 
-export function meter(source: ReadableStream<Uint8Array>, requestedModel: string, signal?: AbortSignal): Metered {
-  const decoder = new TextDecoder();
-  let pending = "";
-  let event = "";
-  let model = requestedModel;
-  const usage: Usage = {};
-  let finalOutput: number | null = null;
-  let deltaText = "";
-  let settled = false;
-  let settle: (micros: number) => void = () => {};
-  const cost = new Promise<number>((resolve) => (settle = resolve));
-  let settleOutputs: (outputs: Outputs) => void = () => {};
-  const outputs = new Promise<Outputs>((resolve) => (settleOutputs = resolve));
-  const made: Outputs = { container: null, files: [] };
+const decoder = new TextDecoder();
 
-  const finish = () => {
-    if (settled) return;
-    settled = true;
-    const output = finalOutput ?? Math.max(usage.output_tokens ?? 0, estimateTokens(deltaText));
-    settle(costMicros(model, { ...usage, output_tokens: output }));
-    settleOutputs(made);
-  };
+/**
+ * The second copy of the reply, whole, or as far as it came when the app
+ * stopped it (`signal`). In Cloudflare's runtime the copy is gathered
+ * natively (IdentityTransformStream); elsewhere (the tests) in JavaScript.
+ */
+async function gather(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<Uint8Array> {
+  const Identity = (globalThis as { IdentityTransformStream?: typeof IdentityTransformStream }).IdentityTransformStream;
+  if (Identity) {
+    const pass = new Identity();
+    const whole = new Response(pass.readable).arrayBuffer();
+    try {
+      await stream.pipeTo(pass.writable, { signal, preventAbort: true });
+    } catch {
+      // Stopped or broken: what came is kept.
+      try { await pass.writable.close(); } catch { /* already closed */ }
+    }
+    return new Uint8Array(await whole);
+  }
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  let length = 0;
+  const stop = () => { reader.cancel().catch(() => {}); };
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      parts.push(next.value);
+      length += next.value.length;
+    }
+  } catch { /* stopped or broken: what came is kept */ }
+  signal?.removeEventListener("abort", stop);
+  const whole = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) { whole.set(part, at); at += part.length; }
+  return whole;
+}
+
+/** The data line of the event that starts at `at` in `text`, parsed; null if it isn't one. */
+function dataAfter(text: string, at: number): Record<string, unknown> | null {
+  const line = text.indexOf("\ndata:", at);
+  if (line < 0) return null;
+  const end = text.indexOf("\n", line + 1);
+  try {
+    return JSON.parse(text.slice(line + 6, end < 0 ? text.length : end)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** What the gathered reply cost, and what its code made. */
+export function readReply(bytes: Uint8Array, requestedModel: string, wantOutputs = true): { micros: number; outputs: Outputs } {
+  const outputs: Outputs = { container: null, files: [] };
   const containerOf = (value: unknown) => {
     const id = (value as { id?: unknown } | null | undefined)?.id;
-    if (typeof id === "string" && OUTPUT_ID.test(id)) made.container = id;
+    if (typeof id === "string" && OUTPUT_ID.test(id)) outputs.container = id;
   };
+  // Only the start and the end are read, unless code ran (its files may be anywhere) or the reply was cut.
+  const head = decoder.decode(bytes.subarray(0, 16 * 1024));
+  const tail = bytes.length > 64 * 1024 ? decoder.decode(bytes.subarray(bytes.length - 48 * 1024)) : null;
+  let whole: string | null = tail === null ? decoder.decode(bytes) : null;
+  const all = () => (whole ??= decoder.decode(bytes));
 
-  const line = (text: string) => {
-    if (text.startsWith("event:")) {
-      event = text.slice(6).trim();
-      return;
-    }
-    if (!text.startsWith("data:")) return;
-    // A code execution result arrives whole in its block's start: only those are read, for their file ids.
-    if (event === "content_block_start") {
-      if (!text.includes("code_execution_tool_result")) return;
-      try {
-        fileIDs((JSON.parse(text.slice(5)) as { content_block?: unknown }).content_block, made.files);
-      } catch { /* not ours to judge */ }
-      return;
-    }
-    if (event !== "message_start" && event !== "message_delta" && event !== "content_block_delta") return;
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(text.slice(5)) as Record<string, unknown>;
-    } catch {
-      return;
-    }
-    if (event === "message_start") {
-      const message = data.message as { model?: unknown; usage?: Usage; container?: unknown } | undefined;
-      if (typeof message?.model === "string") model = message.model;
-      Object.assign(usage, message?.usage ?? {});
-      containerOf(message?.container);
-    } else if (event === "message_delta") {
-      const delta = data.usage as Usage | undefined;
-      if (delta) {
-        // message_delta's counts are the totals so far.
-        for (const key of ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const) {
-          if (typeof delta[key] === "number") usage[key] = delta[key];
-        }
-        if (typeof delta.output_tokens === "number") finalOutput = delta.output_tokens;
-        if (delta.server_tool_use) usage.server_tool_use = delta.server_tool_use;
-      }
-      containerOf((data.delta as { container?: unknown } | undefined)?.container);
-      containerOf(data.container);
-    } else if (finalOutput === null && deltaText.length < 2_000_000) {
-      const delta = data.delta as { text?: unknown; thinking?: unknown } | undefined;
-      if (typeof delta?.text === "string") deltaText += delta.text;
-      if (typeof delta?.thinking === "string") deltaText += delta.thinking;
-    }
-  };
+  let model = requestedModel;
+  const usage: Usage = {};
+  const startAt = head.indexOf("event: message_start");
+  const start = startAt >= 0 ? dataAfter(head, startAt) : null;
+  const message = start?.message as { model?: unknown; usage?: Usage; container?: unknown } | undefined;
+  if (typeof message?.model === "string") model = message.model;
+  Object.assign(usage, message?.usage ?? {});
+  containerOf(message?.container);
 
-  const feed = (chunk: Uint8Array | null) => {
-    pending += chunk ? decoder.decode(chunk, { stream: true }) : decoder.decode();
-    let newline: number;
-    while ((newline = pending.indexOf("\n")) >= 0) {
-      line(pending.slice(0, newline).replace(/\r$/, ""));
-      pending = pending.slice(newline + 1);
+  // message_delta's counts are the totals so far: the last one says it all.
+  const end = tail ?? all();
+  const deltaAt = end.lastIndexOf("event: message_delta");
+  const delta = deltaAt >= 0 ? dataAfter(end, deltaAt) : null;
+  let output: number | null = null;
+  if (delta) {
+    const counts = delta.usage as Usage | undefined;
+    if (counts) {
+      for (const key of ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const) {
+        if (typeof counts[key] === "number") usage[key] = counts[key];
+      }
+      if (typeof counts.output_tokens === "number") output = counts.output_tokens;
+      if (counts.server_tool_use) usage.server_tool_use = counts.server_tool_use;
     }
-    if (!chunk && pending) {
-      line(pending);
-      pending = "";
-    }
-  };
+    containerOf((delta.delta as { container?: unknown } | undefined)?.container);
+    containerOf(delta.container);
+  }
 
-  signal?.addEventListener("abort", finish, { once: true });
-  // Pulled by the app's connection, so a stopped reply cancels Anthropic's
-  // stream (and so its request) and is counted, whichever side stops.
-  const reader = source.getReader();
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      let next: ReadableStreamReadResult<Uint8Array>;
-      try {
-        next = await reader.read();
-      } catch (error) {
-        finish();
-        controller.error(error);
-        return;
+  // A code execution result arrives whole in its block's start: only those lines are read, for their file ids.
+  const full = wantOutputs || output === null ? all() : "";
+  for (let at = full.indexOf("code_execution_tool_result"); at >= 0; at = full.indexOf("code_execution_tool_result", at + 1)) {
+    const lineStart = full.lastIndexOf("\n", at) + 1;
+    const lineEnd = full.indexOf("\n", at);
+    const line = full.slice(lineStart, lineEnd < 0 ? full.length : lineEnd);
+    if (line.startsWith("data:") && line.includes('"content_block_start"')) {
+      try { fileIDs((JSON.parse(line.slice(5)) as { content_block?: unknown }).content_block, outputs.files); } catch { /* not ours to judge */ }
+    }
+    if (lineEnd < 0) break;
+    at = lineEnd;
+  }
+  if (output === null) {
+    // Stopped before Anthropic said how long it was: the text and thinking that came, estimated.
+    let written = "";
+    for (let at = full.indexOf("event: content_block_delta"); at >= 0; at = full.indexOf("event: content_block_delta", at + 1)) {
+      const line = full.indexOf("\ndata:", at);
+      if (line < 0) break;
+      const lineEnd = full.indexOf("\n", line + 1);
+      const data = full.slice(line + 6, lineEnd < 0 ? full.length : lineEnd).trimEnd();
+      if (data.includes('"text_delta"') || data.includes('"thinking_delta"')) {
+        const value = data.lastIndexOf('":"');
+        if (value >= 0) written += data.slice(value + 3, data.length - (data.endsWith('"}}') ? 3 : data.endsWith('"}') ? 2 : 0));
       }
-      if (next.done) {
-        try { feed(null); } catch {}
-        finish();
-        controller.close();
-        return;
-      }
-      controller.enqueue(next.value);
-      try {
-        feed(next.value);
-      } catch {
-        // Counting never stands in the reply's way.
-      }
-    },
-    async cancel(reason) {
-      finish();
-      await reader.cancel(reason);
-    },
-  });
-  return { body, cost, outputs };
+      if (written.length > 2_000_000 || lineEnd < 0) break;
+      at = lineEnd;
+    }
+    output = Math.max(usage.output_tokens ?? 0, estimateTokens(written));
+  }
+  return { micros: costMicros(model, { ...usage, output_tokens: output }), outputs };
+}
+
+/** `wantOutputs`: code could run (files on), so the whole reply is searched for the files it made. */
+export function meter(source: ReadableStream<Uint8Array>, requestedModel: string, signal?: AbortSignal, wantOutputs = true): Metered {
+  const [toApp, copy] = source.tee();
+  // The copy ends when the app's connection does (the request's signal, or
+  // its copy cancelled): both copies gone, the request to Anthropic ends too.
+  const stop = new AbortController();
+  signal?.addEventListener("abort", () => stop.abort(), { once: true });
+  let body = toApp;
+  const Identity = (globalThis as { IdentityTransformStream?: typeof IdentityTransformStream }).IdentityTransformStream;
+  if (Identity) {
+    const pass = new Identity();
+    toApp.pipeTo(pass.writable).catch(() => stop.abort());
+    body = pass.readable;
+  }
+  const read = gather(copy, stop.signal).then((bytes) => readReply(bytes, requestedModel, wantOutputs));
+  return { body, cost: read.then((result) => result.micros), outputs: read.then((result) => result.outputs) };
 }

@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RegistryCore, WEB_ADMIN_FRESH_MS, WEB_SESSION_LIFETIME_MS, type Sql } from "../src/core";
 import { costMicros, type ClaudeConfig, type LiveModels, type ReplyChoice } from "../src/claude";
-import { estimateTokens, meter } from "../src/meter";
+import { estimateTokens, meter, readReply } from "../src/meter";
 import { handle, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
 import type { Turn } from "../src/turns";
 import { derToRaw, fromBase64url, toBase64url } from "../src/webauthn";
@@ -494,13 +494,40 @@ describe("the estimate of the credit left", () => {
         controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"日本語の返信 and English"}}\n\n'));
       },
     });
-    const metered = meter(source, "claude-opus-5-5");
+    // The app's connection ends (the request's signal), as when the person presses stop.
+    const stopped = new AbortController();
+    const metered = meter(source, "claude-opus-5-5", stopped.signal, false);
     const reader = metered.body.getReader();
     await reader.read();
     await reader.read();
+    stopped.abort();
     await reader.cancel();
     expect(estimateTokens("日本語の返信 and English")).toBe(9);
     expect(await metered.cost).toBe(1000 * 4 + 9 * 20);
+  });
+});
+
+describe("a long reply, read once at its end", () => {
+  const ev = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const long = (withFile: boolean) => encoder.encode([
+    ev("message_start", { type: "message_start", message: { model: "claude-opus-5-5", usage: { input_tokens: 2000, output_tokens: 1 } } }),
+    ...Array.from({ length: 3000 }, (_, i) => ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `文章の続き ${i}` } })),
+    ...(withFile ? [ev("content_block_start", { type: "content_block_start", index: 2, content_block: { type: "bash_code_execution_tool_result", content: { content: [{ file_id: "file_middle01" }] } } })] : []),
+    ...Array.from({ length: 3000 }, () => ev("content_block_delta", { type: "content_block_delta", index: 3, delta: { type: "text_delta", text: "後半" } })),
+    ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", container: { id: "container_end01" } }, usage: { output_tokens: 9000 } }),
+    ev("message_stop", { type: "message_stop" }),
+  ].join(""));
+
+  it("counts it from its start and its end", () => {
+    const bytes = long(false);
+    expect(bytes.length).toBeGreaterThan(64 * 1024);
+    const read = readReply(bytes, "claude-opus-5-5", false);
+    expect(read.micros).toBe(2000 * 4 + 9000 * 20);
+    expect(read.outputs.container).toBe("container_end01");
+  });
+
+  it("finds a file made in the middle when code could run", () => {
+    expect(readReply(long(true), "claude-opus-5-5", true).outputs.files).toEqual(["file_middle01"]);
   });
 });
 
