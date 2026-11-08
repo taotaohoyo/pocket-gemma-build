@@ -314,8 +314,9 @@ export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns:
   try {
     return await send(tools);
   } catch (error) {
-    // A chat's container lapses after 30 days (or was never there): start a new one.
-    if (tools.container && error instanceof Anthropic.APIError && (error.status === 400 || error.status === 404) && /container/i.test(error.message)) {
+    // A chat's container lapses 30 days after it was made (or was never there): start a new one.
+    // The model was checked against Anthropic's list already, so a 404 here is the container's.
+    if (tools.container && error instanceof Anthropic.APIError && (error.status === 404 || (error.status === 400 && /container/i.test(error.message)))) {
       return await send({ ...tools, container: null });
     }
     throw error;

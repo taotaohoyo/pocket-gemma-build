@@ -52,6 +52,16 @@ export function normalizeInviteCode(text: string): string | null {
   return cleaned;
 }
 
+/**
+ * A person's history key: 32 random bytes in base64url. Fielua for the web
+ * encrypts the conversations it keeps on the person's own device with it, so
+ * they can be read there only after signing in. The relay keeps the key and
+ * never sees a conversation.
+ */
+export function newHistoryKey(): string {
+  return base64url(randomBytes(32));
+}
+
 export function newID(): string {
   return base64url(randomBytes(12));
 }

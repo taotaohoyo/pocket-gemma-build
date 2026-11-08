@@ -546,7 +546,11 @@ describe("the request to Anthropic", () => {
     }
   });
 
-  it("starts a new container when a chat's old one has lapsed", async () => {
+  it.each([
+    [400, { type: "invalid_request_error", message: "container_old111 has expired" }],
+    // What Anthropic answers for a lapsed container is not documented: a 404 of any wording counts too.
+    [404, { type: "not_found_error", message: "Not found" }],
+  ])("starts a new container when a chat's old one has lapsed (%i)", async (status, error) => {
     const containers: unknown[] = [];
     const server = createServer((req, res) => {
       let data = "";
@@ -555,8 +559,8 @@ describe("the request to Anthropic", () => {
         const body = JSON.parse(data) as { container?: { id?: string } };
         containers.push(body.container?.id ?? null);
         if (body.container?.id) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "container_old111 has expired" } }));
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ type: "error", error }));
           return;
         }
         res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -571,6 +575,35 @@ describe("the request to Anthropic", () => {
       const response = await streamReply(cfg, top.choice, [{ role: "user", content: "続き" }], "user-id-1", undefined, { webSearch: false, files: true, container: "container_old111" });
       expect(await response.text()).toContain("message_stop");
       expect(containers).toEqual(["container_old111", null]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it.each([
+    // Refused for something else: passed on as it is, asked once.
+    [400, { type: "invalid_request_error", message: "max_tokens: 999999 > 128000" }, ["container_old111"]],
+    // Refused again without the container: passed on, asked twice in all.
+    [404, { type: "not_found_error", message: "Not found" }, ["container_old111", null]],
+  ])("starts again without the container only once, and only for the container (%i)", async (status, error, asked) => {
+    const containers: unknown[] = [];
+    const server = createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        containers.push((JSON.parse(data) as { container?: { id?: string } }).container?.id ?? null);
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const cfg = config({ ANTHROPIC_API_KEY: "sk-ant-test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}` })!;
+      const top = choose(cfg, "claude-opus-5-5", "medium");
+      if (!top.ok) throw new Error(top.error);
+      await expect(streamReply(cfg, top.choice, [{ role: "user", content: "続き" }], "user-id-1", undefined, { webSearch: false, files: true, container: "container_old111" }))
+        .rejects.toMatchObject({ status });
+      expect(containers).toEqual(asked);
     } finally {
       server.close();
     }

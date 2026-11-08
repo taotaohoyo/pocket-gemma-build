@@ -142,6 +142,7 @@ class SoftAuthenticator {
 interface Harness {
   deps: Deps;
   core: RegistryCore;
+  sql: Sql;
   env: RelayEnv;
   clock: { now: number };
   calls: { choice: ReplyChoice; turns: Turn[] }[];
@@ -154,9 +155,10 @@ let h: Harness;
 
 beforeEach(() => {
   const clock = { now: Date.UTC(2026, 10, 8, 12) };
-  const core = new RegistryCore(sqlite(), () => clock.now);
+  const sql = sqlite();
+  const core = new RegistryCore(sql, () => clock.now);
   const harness: Harness = {
-    core, clock, calls: [], live: null, background: [],
+    core, sql, clock, calls: [], live: null, background: [],
     reply: "event: message_start\ndata: {}\n\n",
     env: { ANTHROPIC_API_KEY: "sk-ant-test", ADMIN_TOKEN: ADMIN, CLAUDE_MODEL: "claude-opus-5-5", WEB_ORIGINS: `${WEB},https://www.suelira.com`, WEB_RP_ID: RP },
     deps: {
@@ -373,6 +375,70 @@ describe("signing in", () => {
     expect(h.core.listUsers()).toHaveLength(0);
     expect((await call("GET", "/v1/status", { token })).status).toBe(401);
     expect(await (await login(authenticator)).json()).toMatchObject({ error: "unknown_passkey" });
+  });
+});
+
+describe("the history key", () => {
+  type Key = { key: string };
+  it("is the same for the same person, another for another, and only for a signed-in web session", async () => {
+    const developer = await signUp("開発者", "developer");
+    const first = await call("GET", "/v1/history-key", { token: developer });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("Cache-Control")).toBe("no-store");
+    const { key } = await first.json() as Key;
+    expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(((await (await call("GET", "/v1/history-key", { token: developer })).json()) as Key).key).toBe(key);
+    const friend = await signUp("友人", "friend");
+    expect(((await (await call("GET", "/v1/history-key", { token: friend })).json()) as Key).key).not.toBe(key);
+    // Not without a session, not from another site, not for the iPhone app's token.
+    expect((await call("GET", "/v1/history-key", {})).status).toBe(401);
+    expect((await call("GET", "/v1/history-key", { token: developer, origin: "https://evil.example" })).status).toBe(403);
+    const redeemed = await call("POST", "/v1/redeem", { body: { code: await invite("iPhone", "friend") }, origin: null });
+    const { token: app } = await redeemed.json() as { token: string };
+    expect((await call("GET", "/v1/history-key", { token: app, origin: null })).status).toBe(403);
+    // Only the key, one for each who asked: nothing of a conversation is kept with it.
+    const rows = h.sql.exec("SELECT * FROM history_keys").toArray();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(Object.keys(row).sort()).toEqual(["created_at", "key", "user_id"]);
+  });
+
+  const idOf = (name: string) => h.core.listUsers().find((user) => user.name === name)!.id;
+  const keyRow = (id: string) => h.sql.exec("SELECT key FROM history_keys WHERE user_id = ?", id).toArray();
+
+  it("goes with the person: after 登録を解除 their key is gone, and a new registration gets another", async () => {
+    const authenticator = new SoftAuthenticator();
+    const token = await signUp("友人", "friend", authenticator);
+    const { key } = await (await call("GET", "/v1/history-key", { token })).json() as Key;
+    const id = idOf("友人");
+    expect(keyRow(id)).toHaveLength(1);
+    expect((await call("POST", "/v1/leave", { token })).status).toBe(200);
+    expect(keyRow(id)).toHaveLength(0);
+    expect((await call("GET", "/v1/history-key", { token })).status).toBe(401);
+    const again = await signUp("友人", "friend");
+    expect(((await (await call("GET", "/v1/history-key", { token: again })).json()) as Key).key).not.toBe(key);
+  });
+
+  it("goes when the developer deletes the person too (no one else's), and is never made for someone no longer registered", async () => {
+    const developer = await signUp("開発者", "developer");
+    const kept = ((await (await call("GET", "/v1/history-key", { token: developer })).json()) as Key).key;
+    const token = await signUp("友人", "friend");
+    expect((await call("GET", "/v1/history-key", { token })).status).toBe(200);
+    const id = idOf("友人");
+    expect((await call("DELETE", `/admin/users/${id}`, { token: ADMIN, origin: null })).status).toBe(200);
+    expect(keyRow(id)).toHaveLength(0);
+    expect(keyRow(idOf("開発者"))).toEqual([{ key: kept }]);
+    // Deleted between a request's sign-in check and its key (others still registered): nothing is left behind.
+    expect(h.core.historyKey(id, "probe")).toBeNull();
+    expect(keyRow(id)).toHaveLength(0);
+  });
+
+  it("answers 401 when the person went between the sign-in check and the key", async () => {
+    const token = await signUp("友人", "friend");
+    const registry = h.deps.registry;
+    h.deps.registry = new Proxy(registry, { get: (target, name) => (name === "historyKey" ? async () => null : Reflect.get(target, name)) });
+    const response = await call("GET", "/v1/history-key", { token });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
   });
 });
 

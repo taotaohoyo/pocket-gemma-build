@@ -11,6 +11,7 @@
 //   GET  /v1/files/:id         a file the person's own reply made: its name, type and size
 //   GET  /v1/files/:id/content the file itself, to download
 //   POST /v1/leave             the user's own registration deleted (its token stops at once)
+//   GET  /v1/history-key       the key a web user's browser encrypts its own history with (web sessions only)
 //   GET  /join                 the page an invite link opens (the code stays in the link's #)
 //   POST /web/passkey/register/options|verify   an invite code for a passkey and a web session
 //   POST /web/passkey/login/options|verify      a passkey for a web session
@@ -31,7 +32,7 @@ import {
 import { joinPage } from "./join";
 import { meter, OUTPUT_ID } from "./meter";
 import {
-  adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newID, newInviteCode, normalizeInviteCode,
+  adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newHistoryKey, newID, newInviteCode, normalizeInviteCode,
   tokenHash, webSessionHash,
 } from "./security";
 import { attachmentLimits, parseTurns, readJSON, type Turn } from "./turns";
@@ -68,6 +69,7 @@ export interface RegistryAPI {
   addSpend(micros: number): Promise<void>;
   rememberOutputs(userID: string, container: string | null, files: string[]): Promise<void>;
   ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean>;
+  historyKey(userID: string, candidate: string): Promise<string | null>;
 }
 
 export interface RelayEnv {
@@ -154,6 +156,7 @@ async function route(request: Request, ctx: Context): Promise<Response> {
     if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, ctx.deps);
     if (request.method === "POST" && path === "/v1/messages") return await messages(request, ctx);
     if (request.method === "POST" && path === "/v1/leave") return await leave(request, ctx);
+    if (request.method === "GET" && path === "/v1/history-key") return await historyKey(request, ctx);
     const file = /^\/v1\/files\/([^/]+)(\/content)?$/.exec(path);
     if (request.method === "GET" && file) return await download(request, ctx, file[1]!, !!file[2]);
     return json(404, { error: "not_found" });
@@ -300,6 +303,22 @@ async function leave(request: Request, ctx: Context): Promise<Response> {
   if (!found) return json(401, { error: "unauthorized" });
   await ctx.deps.registry.deleteUser(found.id);
   return json(200, { left: true });
+}
+
+/**
+ * The key Fielua for the web encrypts the conversations it keeps on the
+ * person's own device with. Only a signed-in web session gets it (from the
+ * web app's own origin), always the same one for the same person, and it is
+ * deleted with them: then that device's history can't be read any more.
+ */
+async function historyKey(request: Request, ctx: Context): Promise<Response> {
+  const person = await caller(request, ctx);
+  if (person instanceof Response) return person;
+  if (!person.session) return json(403, { error: "forbidden" });
+  const key = await ctx.deps.registry.historyKey(person.id, newHistoryKey());
+  // Deleted a moment ago (登録を解除 in another tab): as for any request from someone no longer registered.
+  if (!key) return json(401, { error: "unauthorized" });
+  return json(200, { key });
 }
 
 async function messages(request: Request, ctx: Context): Promise<Response> {

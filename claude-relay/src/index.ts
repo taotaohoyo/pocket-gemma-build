@@ -64,6 +64,8 @@ export class Registry extends DurableObject<Env> implements RegistryAPI {
   // What code execution made, and whose it is
   async rememberOutputs(userID: string, container: string | null, files: string[]): Promise<void> { this.core.rememberOutputs(userID, container, files); }
   async ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean> { return this.core.ownsOutput(userID, kind, id); }
+  // The key a web user's browser encrypts its own history with
+  async historyKey(userID: string, candidate: string): Promise<string | null> { return this.core.historyKey(userID, candidate); }
 }
 
 export default {

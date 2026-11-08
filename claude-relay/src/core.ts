@@ -2,9 +2,11 @@
 // switches. Plain SQL over the Durable Object's SQLite (registry.ts), so
 // the same code runs in the tests on Node's SQLite.
 //
-// Nothing secret is stored: access tokens and invite codes are kept only
-// as SHA-256 hashes (security.ts), and nothing of a conversation is ever
-// written here.
+// Nothing secret of the app's is stored: access tokens and invite codes are
+// kept only as SHA-256 hashes (security.ts), and nothing of a conversation is
+// ever written here. The one key kept as it is: each web user's history key,
+// with which their own browser encrypts the history it keeps (no use without
+// that device's data, and gone when the person is deleted).
 
 import type { StoredKey } from "./webauthn";
 
@@ -149,6 +151,8 @@ export class RegistryCore {
     // What a person's replies made with code execution: whose each file and container is (ids only).
     sql.exec(`CREATE TABLE IF NOT EXISTS outputs (
       kind TEXT NOT NULL, id TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (kind, id))`);
+    // The key each web user's browser encrypts its own history with (the history stays on that device).
+    sql.exec(`CREATE TABLE IF NOT EXISTS history_keys (user_id TEXT PRIMARY KEY, key TEXT NOT NULL, created_at INTEGER NOT NULL)`);
   }
 
   // MARK: Users
@@ -180,6 +184,7 @@ export class RegistryCore {
     this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM web_sessions WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM outputs WHERE user_id = ?`, id);
+    this.sql.exec(`DELETE FROM history_keys WHERE user_id = ?`, id);
     return this.listUsers().length < before;
   }
 
@@ -199,6 +204,22 @@ export class RegistryCore {
   ownsOutput(userID: string, kind: OutputKind, id: string): boolean {
     const row = this.sql.exec(`SELECT user_id, created_at FROM outputs WHERE kind = ? AND id = ?`, kind, id).toArray()[0];
     return !!row && row.user_id === userID && Number(row.created_at) > this.now() - OUTPUTS_KEPT_MS;
+  }
+
+  // MARK: The history key
+
+  /**
+   * The person's history key: the one kept, or `candidate`, kept now as
+   * theirs (the first time they ask). Null when they are no longer
+   * registered (deleted between their request's sign-in check and this), so
+   * no key is left behind for nobody.
+   */
+  historyKey(userID: string, candidate: string): string | null {
+    this.sql.exec(
+      `INSERT INTO history_keys (user_id, key, created_at) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?) ON CONFLICT(user_id) DO NOTHING`,
+      userID, candidate, this.now(), userID);
+    const row = this.sql.exec(`SELECT key FROM history_keys WHERE user_id = ?`, userID).toArray()[0];
+    return row ? String(row.key) : null;
   }
 
   // MARK: Invites
