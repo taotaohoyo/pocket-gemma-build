@@ -8,8 +8,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
-  RegistryCore, type Challenge, type Invite, type InviteCheck, type Passkey, type PauseReason, type RedeemResult, type Role, type Settings,
-  type User, type UserStatus, type WebSession,
+  RegistryCore, type Challenge, type Invite, type InviteCheck, type OutputKind, type Passkey, type PauseReason, type RedeemResult, type Role,
+  type Settings, type User, type UserStatus, type WebSession,
 } from "./core";
 import type { StoredKey } from "./webauthn";
 import { handle, type RegistryAPI, type RelayEnv } from "./relay";
@@ -61,6 +61,9 @@ export class Registry extends DurableObject<Env> implements RegistryAPI {
   async setCredit(budgetMicros: number | null): Promise<Settings> { return this.core.setCredit(budgetMicros); }
   async setCreditFriends(on: boolean): Promise<Settings> { return this.core.setCreditFriends(on); }
   async addSpend(micros: number): Promise<void> { this.core.addSpend(micros); }
+  // What code execution made, and whose it is
+  async rememberOutputs(userID: string, container: string | null, files: string[]): Promise<void> { this.core.rememberOutputs(userID, container, files); }
+  async ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean> { return this.core.ownsOutput(userID, kind, id); }
 }
 
 export default {

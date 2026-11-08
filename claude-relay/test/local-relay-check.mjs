@@ -23,7 +23,7 @@ function check(name, ok, detail = "") {
 
 // MARK: The stand-in for Anthropic
 
-const upstream = { requests: [], closedEarly: 0, finished: 0 };
+const upstream = { requests: [], closedEarly: 0, finished: 0, files: [] };
 // Anthropic's Models API, as the relay asks it which models and levels it offers now.
 const MODEL_IDS = ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"];
 function modelsList(res) {
@@ -33,8 +33,22 @@ function modelsList(res) {
   res.end(JSON.stringify({ data, has_more: false, first_id: data[0].id, last_id: data.at(-1).id }));
 }
 
+// A file code execution made, as Anthropic's Files API serves it.
+const MADE = { id: "file_local1", filename: "報告書.pdf", bytes: Buffer.from("%PDF-1.7 made in the container") };
+
 const anthropic = createServer((req, res) => {
   if (req.method === "GET" && req.url.startsWith("/v1/models")) return modelsList(res);
+  if (req.method === "GET" && req.url.startsWith(`/v1/files/${MADE.id}`)) {
+    upstream.files.push({ url: req.url, headers: req.headers });
+    if (req.url.split("?")[0].endsWith("/content")) {
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Length": String(MADE.bytes.length) });
+      res.end(MADE.bytes);
+    } else {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ type: "file", id: MADE.id, filename: MADE.filename, mime_type: "application/pdf", size_bytes: MADE.bytes.length, created_at: "2026-11-08T00:00:00Z", downloadable: true }));
+    }
+    return;
+  }
   let data = "";
   req.on("data", (chunk) => (data += chunk));
   req.on("end", () => {
@@ -48,6 +62,33 @@ const anthropic = createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const send = (event, payload) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    const tools = (body.tools ?? []).map((t) => t.type);
+    if (tools.length) {
+      // A reply that searched once and made a file.
+      send("message_start", { type: "message_start", message: { id: "msg_tools", model: body.model, content: [], container: tools.some((t) => t.startsWith("code_execution")) ? { id: "container_local1" } : null, usage: { input_tokens: 1000, output_tokens: 1 } } });
+      let index = 0;
+      if (tools.some((t) => t.startsWith("web_search"))) {
+        send("content_block_start", { type: "content_block_start", index, content_block: { type: "server_tool_use", id: "srvtoolu_s", name: "web_search", input: {} } });
+        send("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: "{\"query\":\"東京 天気\"}" } });
+        send("content_block_stop", { type: "content_block_stop", index: index++ });
+        send("content_block_start", { type: "content_block_start", index, content_block: { type: "web_search_tool_result", tool_use_id: "srvtoolu_s", content: [{ type: "web_search_result", url: "https://example.com/tenki", title: "東京の天気", encrypted_content: "x".repeat(2000), page_age: null }] } });
+        send("content_block_stop", { type: "content_block_stop", index: index++ });
+      }
+      if (tools.some((t) => t.startsWith("code_execution"))) {
+        send("content_block_start", { type: "content_block_start", index, content_block: { type: "server_tool_use", id: "srvtoolu_c", name: "bash_code_execution", input: {} } });
+        send("content_block_stop", { type: "content_block_stop", index: index++ });
+        send("content_block_start", { type: "content_block_start", index, content_block: { type: "bash_code_execution_tool_result", tool_use_id: "srvtoolu_c", content: { type: "bash_code_execution_result", stdout: "", stderr: "", return_code: 0, content: [{ type: "bash_code_execution_output", file_id: MADE.id }] } } });
+        send("content_block_stop", { type: "content_block_stop", index: index++ });
+      }
+      send("content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } });
+      send("content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: "できました。" } });
+      send("content_block_stop", { type: "content_block_stop", index });
+      send("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 10, server_tool_use: { web_search_requests: tools.some((t) => t.startsWith("web_search")) ? 1 : 0 } } });
+      send("message_stop", { type: "message_stop" });
+      upstream.finished++;
+      res.end();
+      return;
+    }
     send("message_start", { type: "message_start", message: { id: "msg_local", model: body.model, content: [], usage: { input_tokens: 1000, output_tokens: 1 } } });
     send("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
     const pieces = question === "slow" ? 100 : 5;
@@ -185,6 +226,29 @@ try {
     notPhoto.status === 400 && (await notPhoto.json()).error === "bad_attachment" && upstream.requests.length === before4);
   check("the app learns how much it may attach", status.attachments?.bytes === 3 * 1024 * 1024 * 0.75, JSON.stringify(status.attachments));
 
+  // Web search and files: the tools go out, a search is counted, and the file made is the developer's alone
+  await api("POST", "/admin/settings", { token: ADMIN, body: { creditUSD: 10 } });
+  const before5 = (await (await api("GET", "/v1/status", { token })).json()).credit?.spentUSD ?? 0;
+  const tooled = await api("POST", "/v1/messages", { token, body: { ...ask("報告書を PDF で"), tools: { webSearch: true, files: true } } });
+  const tooledText = await tooled.text();
+  const sentTools = upstream.requests.at(-1);
+  check("web search and file making go out as Anthropic's server tools", tooled.status === 200 && tooledText.includes("file_local1") &&
+    JSON.stringify(sentTools.body.tools.map((t) => t.type)) === JSON.stringify(["web_search_20250305", "code_execution_20260521"]) &&
+    sentTools.body.container?.skills?.length === 4 && sentTools.headers["anthropic-beta"]?.includes("code-execution-2025-08-25"), JSON.stringify(sentTools.body.tools));
+  await sleep(300);
+  const after5 = (await (await api("GET", "/v1/status", { token })).json()).credit?.spentUSD ?? 0;
+  check("a search is counted at $0.01 with the tokens", Math.abs(after5 - before5 - (0.004 + 0.0002 + 0.01)) < 1e-9, `${after5 - before5}`);
+  const meta = await api("GET", "/v1/files/file_local1", { token });
+  const metaBody = await meta.json();
+  const file = await api("GET", "/v1/files/file_local1/content", { token });
+  const fileBytes = Buffer.from(await file.arrayBuffer());
+  check("the file it made comes down, by name, as a download", meta.status === 200 && metaBody.filename === "報告書.pdf" && file.status === 200 &&
+    fileBytes.equals(MADE.bytes) && file.headers.get("content-type") === "application/octet-stream" && file.headers.get("content-disposition")?.startsWith("attachment"),
+    JSON.stringify(metaBody));
+  check("the Files API got the relay's key, which the app never has", upstream.files.at(-1)?.headers["x-api-key"] === "sk-ant-local-check" || upstream.files.at(-1)?.headers.authorization === "Bearer sk-ant-local-check");
+  await (await api("POST", "/v1/messages", { token, body: { ...ask("直して"), tools: { files: true, container: "container_local1" } } })).text();
+  check("the next question goes on in the same container", upstream.requests.at(-1).body.container?.id === "container_local1");
+
   check("Anthropic's Models API says the four models are offered", status.models?.every((m) => m.available === true), JSON.stringify(status.models?.map((m) => m.available)));
 
   // The web app's origin, and no other
@@ -248,6 +312,8 @@ try {
   check("and nothing reaches Anthropic", upstream.requests.length === before2);
   await api("POST", "/admin/settings", { token: ADMIN, body: { friendsEnabled: true } });
   check("friends on: the friend can use Claude", (await api("POST", "/v1/messages", { token: friend, body: ask("こんにちは") })).status === 200);
+  const filesBefore = upstream.files.length;
+  check("a friend can't download the developer's file", (await api("GET", "/v1/files/file_local1/content", { token: friend })).status === 404 && upstream.files.length === filesBefore);
   const state1 = await (await api("GET", "/admin/state", { token: ADMIN })).json();
   const friendID = state1.users.find((u) => u.role === "friend").id;
   await api("POST", `/admin/users/${friendID}/revoke`, { token: ADMIN });

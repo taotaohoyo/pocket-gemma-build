@@ -121,6 +121,9 @@ export const CHALLENGE_LIFETIME_MS = 5 * 60 * 1000;
 /** Open challenges at once, everyone together: more is someone knocking, and gets "busy". */
 export const MAX_OPEN_CHALLENGES = 200;
 export const MAX_SESSIONS_PER_USER = 10;
+/** Anthropic keeps a container's files for 30 days. */
+export const OUTPUTS_KEPT_MS = 30 * 24 * HOUR_MS;
+export type OutputKind = "file" | "container";
 /** The token hash of a person who registered on the web: no access token can ever hash to it. */
 const WEB_ONLY = "web-only:";
 
@@ -143,6 +146,9 @@ export class RegistryCore {
     sql.exec(`CREATE TABLE IF NOT EXISTS web_challenges (
       id TEXT PRIMARY KEY, challenge TEXT NOT NULL, purpose TEXT NOT NULL, invite_hash TEXT, user_id TEXT,
       expires_at INTEGER NOT NULL)`);
+    // What a person's replies made with code execution: whose each file and container is (ids only).
+    sql.exec(`CREATE TABLE IF NOT EXISTS outputs (
+      kind TEXT NOT NULL, id TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (kind, id))`);
   }
 
   // MARK: Users
@@ -173,7 +179,26 @@ export class RegistryCore {
     this.sql.exec(`DELETE FROM users WHERE id = ?`, id);
     this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM web_sessions WHERE user_id = ?`, id);
+    this.sql.exec(`DELETE FROM outputs WHERE user_id = ?`, id);
     return this.listUsers().length < before;
+  }
+
+  // MARK: What code execution made
+
+  /** The container and files a person's reply made, as theirs; ones older than Anthropic keeps them are let go. */
+  rememberOutputs(userID: string, container: string | null, files: string[]): void {
+    const at = this.now();
+    this.sql.exec(`DELETE FROM outputs WHERE created_at <= ?`, at - OUTPUTS_KEPT_MS);
+    const add = (kind: OutputKind, id: string) =>
+      this.sql.exec(`INSERT INTO outputs (kind, id, user_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(kind, id) DO NOTHING`, kind, id, userID, at);
+    if (container) add("container", container);
+    for (const file of files.slice(0, 50)) add("file", file);
+  }
+
+  /** Whether a file or container is this person's own (made by one of their replies, still kept). */
+  ownsOutput(userID: string, kind: OutputKind, id: string): boolean {
+    const row = this.sql.exec(`SELECT user_id, created_at FROM outputs WHERE kind = ? AND id = ?`, kind, id).toArray()[0];
+    return !!row && row.user_id === userID && Number(row.created_at) > this.now() - OUTPUTS_KEPT_MS;
   }
 
   // MARK: Invites

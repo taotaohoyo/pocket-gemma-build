@@ -8,8 +8,12 @@ import { DatabaseSync } from "node:sqlite";
 import Anthropic from "@anthropic-ai/sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RegistryCore, REDEEM_FAILURES_PER_HOUR, type Sql } from "../src/core";
-import { attachedBody, choose, config, MODELS, streamReply, SYSTEM_PROMPT, type ClaudeConfig, type ReplyChoice } from "../src/claude";
-import { cleanName, handle, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
+import {
+  attachedBody, choose, config, costMicros, MODELS, NO_TOOLS, streamReply, SYSTEM_PROMPT, systemPrompt, toolParams, type ClaudeConfig, type ReplyChoice,
+  type ToolChoice,
+} from "../src/claude";
+import { meter } from "../src/meter";
+import { cleanName, handle, safeFilename, type Deps, type RegistryAPI, type RelayEnv } from "../src/relay";
 import type { Turn } from "../src/turns";
 
 const ADMIN = "admin-key-for-tests-0123456789abcdef";
@@ -36,9 +40,13 @@ interface Harness {
   deps: Deps;
   core: RegistryCore;
   env: RelayEnv;
-  calls: { cfg: ClaudeConfig; choice: ReplyChoice; turns: Turn[]; userID: string }[];
+  calls: { cfg: ClaudeConfig; choice: ReplyChoice; turns: Turn[]; userID: string; tools: ToolChoice }[];
   clock: { now: number };
   claudeError: unknown;
+  /** What the stand-in streams back; a plain start by default. */
+  stream: string;
+  /** Work the relay leaves running after its answer (waitUntil). */
+  pending: Promise<unknown>[];
 }
 
 let h: Harness;
@@ -48,17 +56,18 @@ beforeEach(() => {
   const core = new RegistryCore(sqlite(), () => clock.now);
   const calls: Harness["calls"] = [];
   const harness: Harness = {
-    core, clock, calls, claudeError: null,
+    core, clock, calls, claudeError: null, stream: "event: message_start\ndata: {}\n\n", pending: [],
     env: { ANTHROPIC_API_KEY: "sk-ant-test", ADMIN_TOKEN: ADMIN, CLAUDE_MODEL: "claude-opus-5-5" },
     deps: {
       registry: asyncRegistry(core),
       models: async () => null,
       now: () => clock.now,
-      claude: async (cfg, choice, turns, userID) => {
-        calls.push({ cfg, choice, turns, userID });
+      claude: async (cfg, choice, turns, userID, _signal, tools = NO_TOOLS) => {
+        calls.push({ cfg, choice, turns, userID, tools });
         if (harness.claudeError) throw harness.claudeError;
-        return new Response("event: message_start\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
+        return new Response(harness.stream, { headers: { "Content-Type": "text/event-stream" } });
       },
+      waitUntil: (promise) => { harness.pending.push(promise); },
     },
   };
   h = harness;
@@ -524,6 +533,44 @@ describe("the request to Anthropic", () => {
       expect(seen[3]!.headers["anthropic-beta"]).toBeUndefined();
       expect(seen[3]!.body).not.toHaveProperty("fallbacks");
       expect(seen[3]!.body).toMatchObject({ model: "claude-haiku-5-5", messages: photo });
+      // Web search and files: the tools, the container with Anthropic's document skills, and code execution's beta.
+      await (await streamReply(cfg, top.choice, turns, "user-id-1", undefined, { webSearch: true, files: true, container: "container_abc123" })).text();
+      expect(seen[4]!.headers["anthropic-beta"]).toBe("server-side-fallback-2026-07-01,code-execution-2025-08-25");
+      expect(seen[4]!.body).toMatchObject({
+        system: systemPrompt({ webSearch: true, files: true, container: null }),
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }, { type: "code_execution_20260521", name: "code_execution" }],
+        container: { id: "container_abc123", skills: [{ type: "anthropic", skill_id: "pdf", version: "latest" }, {}, {}, {}] },
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("starts a new container when a chat's old one has lapsed", async () => {
+    const containers: unknown[] = [];
+    const server = createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        const body = JSON.parse(data) as { container?: { id?: string } };
+        containers.push(body.container?.id ?? null);
+        if (body.container?.id) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "container_old111 has expired" } }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const cfg = config({ ANTHROPIC_API_KEY: "sk-ant-test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}` })!;
+      const top = choose(cfg, "claude-opus-5-5", "medium");
+      if (!top.ok) throw new Error(top.error);
+      const response = await streamReply(cfg, top.choice, [{ role: "user", content: "続き" }], "user-id-1", undefined, { webSearch: false, files: true, container: "container_old111" });
+      expect(await response.text()).toContain("message_stop");
+      expect(containers).toEqual(["container_old111", null]);
     } finally {
       server.close();
     }
@@ -537,6 +584,101 @@ describe("the request to Anthropic", () => {
     expect(config({ ANTHROPIC_API_KEY: "k" })).toMatchObject({ model: "claude-opus-5-5", maxTokens: 64000 });
     expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MODEL: "claude-unknown" })!.model).toBe("claude-opus-5-5");
     expect(config({})).toBeNull();
+  });
+});
+
+describe("web search and files", () => {
+  const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const made = (container: string, files: string[]) => [
+    sse("message_start", { type: "message_start", message: { id: "msg_1", model: "claude-opus-5-5", container: { id: container }, usage: { input_tokens: 1000, output_tokens: 1 } } }),
+    sse("content_block_start", { type: "content_block_start", index: 1, content_block: {
+      type: "bash_code_execution_tool_result", tool_use_id: "srvtoolu_1",
+      content: { type: "bash_code_execution_result", stdout: "", stderr: "", return_code: 0, content: files.map((file_id) => ({ type: "bash_code_execution_output", file_id })) },
+    } }),
+    sse("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 100, server_tool_use: { web_search_requests: 2 } } }),
+    sse("message_stop", { type: "message_stop" }),
+  ].join("");
+
+  it("are off unless the app turns them on, with true and nothing else", async () => {
+    const token = await join("開発者", "developer");
+    await call("POST", "/v1/messages", { token, body: hello });
+    await call("POST", "/v1/messages", { token, body: { ...hello, tools: { webSearch: "yes", files: 1 } } });
+    await call("POST", "/v1/messages", { token, body: { ...hello, tools: { webSearch: true, files: true } } });
+    expect(h.calls.map((c) => c.tools)).toEqual([NO_TOOLS, NO_TOOLS, { webSearch: true, files: true, container: null }]);
+    const status = (await (await call("GET", "/v1/status", { token })).json()) as { tools: unknown };
+    expect(status.tools).toEqual({ webSearch: true, files: true });
+  });
+
+  it("go to Anthropic as its server tools: plain search beside code execution, the newer search alone", () => {
+    expect(toolParams(NO_TOOLS)).toEqual({});
+    expect(toolParams({ webSearch: true, files: false, container: null })).toEqual({ tools: [
+      { type: "web_search_20260209", name: "web_search", max_uses: 5 },
+      { type: "web_fetch_20260209", name: "web_fetch", max_uses: 5 },
+    ] });
+    const skills = ["pdf", "docx", "xlsx", "pptx"].map((skill_id) => ({ type: "anthropic", skill_id, version: "latest" }));
+    expect(toolParams({ webSearch: false, files: true, container: "container_abc123" })).toEqual({
+      tools: [{ type: "code_execution_20260521", name: "code_execution" }],
+      container: { id: "container_abc123", skills },
+    });
+    expect(toolParams({ webSearch: true, files: true, container: null })).toEqual({
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }, { type: "code_execution_20260521", name: "code_execution" }],
+      container: { skills },
+    });
+    expect(SYSTEM_PROMPT).toContain("cannot see other chats or browse the web");
+    expect(systemPrompt({ webSearch: true, files: false, container: null })).toContain("search the web");
+    expect(systemPrompt({ webSearch: false, files: true, container: null })).toContain("$OUTPUT_DIR");
+  });
+
+  it("a search costs $0.01 on top of the tokens, in the estimate", async () => {
+    expect(costMicros("claude-opus-5-5", { input_tokens: 1000, output_tokens: 100, server_tool_use: { web_search_requests: 2 } })).toBe(4000 + 2000 + 20000);
+    const metered = meter(new Response(made("container_abc123", ["file_one111", "file_two222"])).body!, "claude-opus-5-5");
+    await new Response(metered.body).text();
+    expect(await metered.cost).toBe(26000);
+    expect(await metered.outputs).toEqual({ container: "container_abc123", files: ["file_one111", "file_two222"] });
+  });
+
+  it("files a reply made are its person's own: only they get them, and go on in its container", async () => {
+    const dev = await join("開発者", "developer");
+    await call("POST", "/admin/settings", { token: ADMIN, body: { friendsEnabled: true } });
+    const friend = await join("友人", "friend");
+    h.stream = made("container_dev111", ["file_dev111"]);
+    await (await call("POST", "/v1/messages", { token: dev, body: { ...hello, tools: { files: true } } })).text();
+    await Promise.all(h.pending);
+    const fetched: string[] = [];
+    h.deps.files = {
+      metadata: async (_cfg, id) => ({ filename: "../../報告書.pdf", mime_type: "application/pdf", size_bytes: 1234, downloadable: true, id }),
+      content: async (_cfg, id) => { fetched.push(id); return new Response("%PDF-1.7 本文", { headers: { "Content-Length": "16" } }); },
+    };
+    const meta = await call("GET", "/v1/files/file_dev111", { token: dev });
+    expect(await meta.json()).toEqual({ id: "file_dev111", filename: "報告書.pdf", mimeType: "application/pdf", size: 1234 });
+    const file = await call("GET", "/v1/files/file_dev111/content", { token: dev });
+    expect(file.status).toBe(200);
+    expect(file.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(file.headers.get("Content-Disposition")).toContain("filename*=UTF-8''%E5%A0%B1%E5%91%8A%E6%9B%B8.pdf");
+    expect(await file.text()).toBe("%PDF-1.7 本文");
+    // The friend, a stranger and a made-up id all find nothing, and Anthropic is never asked.
+    for (const [token, path] of [[friend, "/v1/files/file_dev111/content"], [friend, "/v1/files/file_dev111"], [dev, "/v1/files/file_other99/content"], [dev, "/v1/files/..%2Fadmin/content"]] as const) {
+      expect((await call("GET", path, { token })).status).toBe(404);
+    }
+    expect((await call("GET", "/v1/files/file_dev111/content")).status).toBe(401);
+    expect(fetched).toEqual(["file_dev111"]);
+    // The next question goes on in the developer's own container; the friend's claim to it is dropped.
+    h.stream = "event: message_start\ndata: {}\n\n";
+    await call("POST", "/v1/messages", { token: dev, body: { ...hello, tools: { files: true, container: "container_dev111" } } });
+    await call("POST", "/v1/messages", { token: friend, body: { ...hello, tools: { files: true, container: "container_dev111" } } });
+    expect(h.calls.at(-2)!.tools.container).toBe("container_dev111");
+    expect(h.calls.at(-1)!.tools.container).toBeNull();
+    // Gone with the person.
+    const users = (await (await call("GET", "/admin/state", { token: ADMIN })).json()) as { users: { id: string; role: string }[] };
+    await call("DELETE", `/admin/users/${users.users.find((u) => u.role === "developer")!.id}`, { token: ADMIN });
+    expect(h.core.ownsOutput(users.users.find((u) => u.role === "developer")!.id, "file", "file_dev111")).toBe(false);
+  });
+
+  it("file names are shown and saved as their last part only", () => {
+    expect(safeFilename("/mnt/outputs/表.xlsx")).toBe("表.xlsx");
+    expect(safeFilename("..\\..\\x.txt")).toBe("x.txt");
+    expect(safeFilename("a\u202Eb.pdf")).toBe("ab.pdf");
+    expect(safeFilename("..")).toBe("file");
   });
 });
 

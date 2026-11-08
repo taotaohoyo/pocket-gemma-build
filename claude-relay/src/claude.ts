@@ -75,7 +75,12 @@ export interface Usage {
   output_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /** Server tools used: each web search costs $0.01 on top of the tokens. */
+  server_tool_use?: { web_search_requests?: number | null } | null;
 }
+
+/** A web search, in millionths of a dollar ($10 per 1,000). */
+export const SEARCH_MICROS = 10_000;
 
 /** What a reply cost, in millionths of a dollar (tokens times the price per million tokens). */
 export function costMicros(model: string, usage: Usage): number {
@@ -85,7 +90,8 @@ export function costMicros(model: string, usage: Usage): number {
   const written = usage.cache_creation_input_tokens ?? 0;
   const read = usage.cache_read_input_tokens ?? 0;
   const rates = price.long && input + written + read > price.long.above ? price.long : price;
-  return Math.round(input * rates.input + written * rates.input * 1.25 + read * rates.cacheRead + output * rates.output);
+  const searches = usage.server_tool_use?.web_search_requests ?? 0;
+  return Math.round(input * rates.input + written * rates.input * 1.25 + read * rates.cacheRead + output * rates.output + searches * SEARCH_MICROS);
 }
 
 export function modelInfo(id: string): ModelInfo | undefined {
@@ -197,16 +203,71 @@ export function config(env: {
   };
 }
 
-/** What Claude is told about where it answers. No personal data, the same for everyone, so it caches. */
-export const SYSTEM_PROMPT = [
-  "You are Claude, made by Anthropic, answering through Fielua, a personal chat app on iPhone and on the web.",
-  "Reply in the language the person writes in.",
-  "Fielua shows Markdown: headings, lists, tables, code blocks, and LaTeX math between $ signs.",
-  "Keep answers focused, and go into detail when the person asks for it.",
-  "You see this conversation, with the photos, PDFs and text files the person attached to it.",
-  "A video arrives as a few still frames, each captioned with its time, and without sound.",
-  "You cannot see other chats or browse the web.",
-].join(" ");
+/**
+ * The tools the person turned on for a request (Fielua for the web's plus
+ * menu), and the container a chat's earlier files are in. None by default:
+ * the iPhone app sends none.
+ */
+export interface ToolChoice {
+  /** Searching the web, and reading pages (Anthropic's server tools: $10 per 1,000 searches). */
+  webSearch: boolean;
+  /** Running code to make files the person downloads (code execution, with Anthropic's document skills). */
+  files: boolean;
+  /** A container this person's earlier reply made files in, to go on with them. */
+  container: string | null;
+}
+export const NO_TOOLS: ToolChoice = { webSearch: false, files: false, container: null };
+
+/** Searches in one reply: enough to compare a few sources, not a runaway bill. */
+export const MAX_SEARCHES = 5;
+/** Anthropic's own skills for making documents: PDF, Word, Excel, PowerPoint. */
+export const FILE_SKILLS = ["pdf", "docx", "xlsx", "pptx"] as const;
+const CODE_EXECUTION_BETA = "code-execution-2025-08-25";
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+/** The request's tools and container, as Anthropic takes them; nothing when none is on. */
+export function toolParams(tools: ToolChoice): { tools?: Record<string, unknown>[]; container?: Record<string, unknown> } {
+  const list: Record<string, unknown>[] = [];
+  if (tools.webSearch) {
+    if (tools.files) {
+      // Code execution is on for files: the plain search, so code runs in one place only
+      // (the dynamic-filtering versions run code of their own).
+      list.push({ type: "web_search_20250305", name: "web_search", max_uses: MAX_SEARCHES });
+    } else {
+      list.push({ type: "web_search_20260209", name: "web_search", max_uses: MAX_SEARCHES });
+      list.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: MAX_SEARCHES });
+    }
+  }
+  if (tools.files) list.push({ type: "code_execution_20260521", name: "code_execution" });
+  if (!list.length) return {};
+  if (!tools.files) return { tools: list };
+  return {
+    tools: list,
+    container: {
+      ...(tools.container ? { id: tools.container } : {}),
+      skills: FILE_SKILLS.map((id) => ({ type: "anthropic", skill_id: id, version: "latest" })),
+    },
+  };
+}
+
+/** What Claude is told about where it answers. No personal data, the same for everyone with the same tools, so it caches. */
+export function systemPrompt(tools: ToolChoice = NO_TOOLS): string {
+  return [
+    "You are Claude, made by Anthropic, answering through Fielua, a personal chat app on iPhone and on the web.",
+    "Reply in the language the person writes in.",
+    "Fielua shows Markdown: headings, lists, tables, code blocks, and LaTeX math between $ signs.",
+    "Keep answers focused, and go into detail when the person asks for it.",
+    "You see this conversation, with the photos, PDFs and text files the person attached to it.",
+    "A video arrives as a few still frames, each captioned with its time, and without sound.",
+    tools.webSearch
+      ? "You cannot see other chats. You can search the web when a question needs current or outside facts; Fielua lists the pages you cite under your reply."
+      : "You cannot see other chats or browse the web.",
+    ...(tools.files
+      ? ["You can run code and make files. When the person asks for a file (PDF, Word, Excel, PowerPoint, text, CSV, an image and so on), make it and save it in $OUTPUT_DIR: Fielua shows every file saved there under your reply, to download. Name the file in your reply rather than pasting all of its content again."]
+      : []),
+  ].join(" ");
+}
+export const SYSTEM_PROMPT = systemPrompt();
 
 /**
  * Starts a streamed reply. Resolves with Anthropic's own server-sent
@@ -215,7 +276,7 @@ export const SYSTEM_PROMPT = [
  * are passed on untouched, so the relay spends next to no CPU on them,
  * and `signal` (the app's connection) ends the request at Anthropic too.
  */
-export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns: Turn[], userID: string, signal?: AbortSignal): Promise<Response> {
+export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns: Turn[], userID: string, signal?: AbortSignal, tools: ToolChoice = NO_TOOLS): Promise<Response> {
   // Everything explicit: the SDK would otherwise read ANTHROPIC_* from
   // process.env, which the Workers runtime fills with the Worker's vars.
   const client = new Anthropic({ apiKey: cfg.apiKey, authToken: null, baseURL: cfg.baseURL, maxRetries: 2, timeout: 10 * 60 * 1000 });
@@ -223,7 +284,7 @@ export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns:
     model: choice.model.id,
     max_tokens: choice.maxTokens,
     stream: true as const,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt(tools),
     messages: turns.map((turn) => ({ role: turn.role, content: turn.content })),
     // Summaries of the thinking, not silence: a long think at 超高 keeps
     // the app's connection busy. Billed the same as hidden thinking.
@@ -236,21 +297,29 @@ export async function streamReply(cfg: ClaudeConfig, choice: ReplyChoice, turns:
     cache_control: { type: "ephemeral" as const },
   };
   const fallback = choice.model.fallback;
-  const attached = attachedBody({ ...params, ...(fallback ? { fallbacks: "default" } : {}) });
-  if (attached) {
-    // Photos and PDFs: the body is written here, not by the SDK (see attachedBody).
+  const betas = [...(fallback ? [FALLBACK_BETA] : []), ...(tools.files ? [CODE_EXECUTION_BETA] : [])];
+  const send = (chosen: ToolChoice) => {
+    const full = { ...params, ...toolParams(chosen), ...(fallback ? { fallbacks: "default" } : {}) };
+    // The body is written here, not by the SDK: photos and PDFs go in as
+    // they are (attachedBody), and the tools need no types of the SDK's.
     return client
       .post("/v1/messages?beta=true", {
-        body: attached,
-        headers: { "content-type": "application/json", ...(fallback ? { "anthropic-beta": "server-side-fallback-2026-07-01" } : {}) },
+        body: attachedBody(full) ?? JSON.stringify(full),
+        headers: { "content-type": "application/json", ...(betas.length ? { "anthropic-beta": betas.join(",") } : {}) },
         stream: true,
         signal,
       })
       .asResponse();
+  };
+  try {
+    return await send(tools);
+  } catch (error) {
+    // A chat's container lapses after 30 days (or was never there): start a new one.
+    if (tools.container && error instanceof Anthropic.APIError && (error.status === 400 || error.status === 404) && /container/i.test(error.message)) {
+      return await send({ ...tools, container: null });
+    }
+    throw error;
   }
-  return client.beta.messages
-    .create({ ...params, ...(fallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}) }, { signal })
-    .asResponse();
 }
 
 /**

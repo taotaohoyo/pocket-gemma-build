@@ -7,7 +7,9 @@
 //
 //   GET  /v1/status            the user and whether Claude can answer now
 //   POST /v1/redeem            an invite code for an access token (once)
-//   POST /v1/messages          a reply to the chat's text turns, streamed, by the chosen model and level
+//   POST /v1/messages          a reply to the chat's turns, streamed, by the chosen model and level (and tools: web search, files)
+//   GET  /v1/files/:id         a file the person's own reply made: its name, type and size
+//   GET  /v1/files/:id/content the file itself, to download
 //   POST /v1/leave             the user's own registration deleted (its token stops at once)
 //   GET  /join                 the page an invite link opens (the code stays in the link's #)
 //   POST /web/passkey/register/options|verify   an invite code for a passkey and a web session
@@ -20,13 +22,14 @@
 //   POST /admin/settings       {friendsEnabled} {resume: true} {creditUSD} {creditFriends}  (admin)
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { Challenge, Credit, Invite, InviteCheck, Passkey, PauseReason, RedeemResult, Role, Settings, User, UserStatus, WebSession } from "./core";
+import type { Challenge, Credit, Invite, InviteCheck, OutputKind, Passkey, PauseReason, RedeemResult, Role, Settings, User, UserStatus, WebSession } from "./core";
 import { MAX_CREDIT_MICROS, MAX_NAME_LENGTH, WEB_ADMIN_FRESH_MS } from "./core";
 import {
-  catalog, choose, config, liveModels, modelInfo, modelName, streamReply, type ClaudeConfig, type LiveModels, type ReplyChoice,
+  catalog, choose, config, liveModels, modelInfo, modelName, NO_TOOLS, streamReply, type ClaudeConfig, type LiveModels, type ReplyChoice,
+  type ToolChoice,
 } from "./claude";
 import { joinPage } from "./join";
-import { meter } from "./meter";
+import { meter, OUTPUT_ID } from "./meter";
 import {
   adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newID, newInviteCode, normalizeInviteCode,
   tokenHash, webSessionHash,
@@ -63,6 +66,8 @@ export interface RegistryAPI {
   setCredit(budgetMicros: number | null): Promise<Settings>;
   setCreditFriends(on: boolean): Promise<Settings>;
   addSpend(micros: number): Promise<void>;
+  rememberOutputs(userID: string, container: string | null, files: string[]): Promise<void>;
+  ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean>;
 }
 
 export interface RelayEnv {
@@ -81,11 +86,32 @@ export interface RelayEnv {
 
 export interface Deps {
   registry: RegistryAPI;
-  claude?: (cfg: ClaudeConfig, choice: ReplyChoice, turns: Turn[], userID: string, signal?: AbortSignal) => Promise<Response>;
+  claude?: (cfg: ClaudeConfig, choice: ReplyChoice, turns: Turn[], userID: string, signal?: AbortSignal, tools?: ToolChoice) => Promise<Response>;
+  /** Anthropic's Files API for a file code execution made; the tests stand in for it. */
+  files?: FilesAPI;
   /** What Anthropic says its models can do now (liveModels); the tests stand in for it. */
   models?: (cfg: ClaudeConfig) => Promise<LiveModels | null>;
   waitUntil?: (promise: Promise<unknown>) => void;
   now?: () => number;
+}
+
+/** The Files API as the relay uses it: a file's details, and its content as a stream. */
+export interface FilesAPI {
+  metadata(cfg: ClaudeConfig, id: string): Promise<{ filename: string; mime_type: string; size_bytes: number; downloadable?: boolean }>;
+  content(cfg: ClaudeConfig, id: string, signal?: AbortSignal): Promise<Response>;
+}
+
+const anthropicFiles: FilesAPI = {
+  metadata(cfg, id) {
+    return client(cfg).files.retrieveMetadata(id);
+  },
+  async content(cfg, id, signal) {
+    return client(cfg).files.download(id, {}, { signal });
+  },
+};
+
+function client(cfg: ClaudeConfig): Anthropic {
+  return new Anthropic({ apiKey: cfg.apiKey, authToken: null, baseURL: cfg.baseURL, maxRetries: 2, timeout: 5 * 60 * 1000 });
 }
 
 /** One request's surroundings: the config, and the web app's origin when the request comes from it. */
@@ -128,6 +154,8 @@ async function route(request: Request, ctx: Context): Promise<Response> {
     if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, ctx.deps);
     if (request.method === "POST" && path === "/v1/messages") return await messages(request, ctx);
     if (request.method === "POST" && path === "/v1/leave") return await leave(request, ctx);
+    const file = /^\/v1\/files\/([^/]+)(\/content)?$/.exec(path);
+    if (request.method === "GET" && file) return await download(request, ctx, file[1]!, !!file[2]);
     return json(404, { error: "not_found" });
   }
   if (path.startsWith("/web/")) return await webRoutes(request, path, ctx);
@@ -239,6 +267,8 @@ async function status(request: Request, ctx: Context): Promise<Response> {
     credit: creditView(settings.credit, settings, person),
     // What the app may attach, so it can shrink photos and say what fits before sending.
     attachments: { bytes: Math.floor((attachmentLimits(ctx.env).chars * 3) / 4) },
+    // The tools the app may turn on for a reply.
+    tools: { webSearch: true, files: true },
     web: person.session
       ? { expiresAt: person.session.expiresAt, adminUntil: person.role === "developer" ? person.session.createdAt + WEB_ADMIN_FRESH_MS : null }
       : undefined,
@@ -285,23 +315,30 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   if (!body.ok) return json(body.error === "too_large" ? 413 : 400, { error: body.error });
   const parsed = parseTurns(body.value, limits);
   if (!parsed.ok) return json(parsed.error === "too_large" ? 413 : 400, { error: parsed.error });
-  const { model, effort } = body.value as { model?: unknown; effort?: unknown };
+  const { model, effort, tools: rawTools } = body.value as { model?: unknown; effort?: unknown; tools?: unknown };
   const chosen = choose(cfg, model, effort, await (deps.models ?? liveModels)(cfg));
   if (!chosen.ok) return json(400, { error: chosen.error });
+  const tools = await toolChoice(rawTools, person, deps);
   const call = deps.claude ?? streamReply;
   let upstream: Response;
   try {
-    upstream = await call(cfg, chosen.choice, parsed.turns, person.id, request.signal);
+    upstream = await call(cfg, chosen.choice, parsed.turns, person.id, request.signal, tools);
   } catch (error) {
     return await claudeFailure(error, deps);
   }
   deps.waitUntil?.(deps.registry.touch(person.id));
   let stream = upstream.body;
-  if (stream && settings.credit.budgetMicros !== null) {
-    // Only the usage is read, for the estimate of the credit left.
+  const counting = settings.credit.budgetMicros !== null;
+  if (stream && (counting || tools.files)) {
+    // Only the usage is read, for the estimate of the credit left, and the
+    // ids of the files code execution made, so they are this person's alone.
     const metered = meter(stream, chosen.choice.model.id, request.signal);
     stream = metered.body;
-    deps.waitUntil?.(metered.cost.then((micros) => deps.registry.addSpend(micros)));
+    if (counting) deps.waitUntil?.(metered.cost.then((micros) => deps.registry.addSpend(micros)));
+    if (tools.files) {
+      deps.waitUntil?.(metered.outputs.then((made) =>
+        made.container || made.files.length ? deps.registry.rememberOutputs(person.id, made.container, made.files) : undefined));
+    }
   }
   return new Response(stream, {
     status: 200,
@@ -315,6 +352,63 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   });
 }
 
+/**
+ * The tools the app turned on, checked: only true turns one on, and a
+ * container is kept only when one of this person's own replies made it.
+ */
+export async function toolChoice(raw: unknown, person: User, deps: Deps): Promise<ToolChoice> {
+  if (typeof raw !== "object" || raw === null) return NO_TOOLS;
+  const { webSearch, files, container } = raw as { webSearch?: unknown; files?: unknown; container?: unknown };
+  const making = files === true;
+  const own = making && typeof container === "string" && OUTPUT_ID.test(container) && await deps.registry.ownsOutput(person.id, "container", container);
+  return { webSearch: webSearch === true, files: making, container: own ? container as string : null };
+}
+
+/**
+ * A file one of the person's own replies made, from Anthropic's Files
+ * API: its details as JSON, or its content passed through as it comes
+ * (no CPU spent on it). Anyone else's file, or one never made here, is
+ * "not found", the same as a file that doesn't exist.
+ */
+async function download(request: Request, ctx: Context, id: string, content: boolean): Promise<Response> {
+  const person = await caller(request, ctx);
+  if (person instanceof Response) return person;
+  if (!OUTPUT_ID.test(id) || !(await ctx.deps.registry.ownsOutput(person.id, "file", id))) return json(404, { error: "not_found" });
+  const cfg = config(ctx.env);
+  if (!cfg) return json(503, { error: "unavailable", reason: "not_configured" });
+  const files = ctx.deps.files ?? anthropicFiles;
+  try {
+    const meta = await files.metadata(cfg, id);
+    if (meta.downloadable === false) return json(404, { error: "not_found" });
+    const filename = safeFilename(meta.filename);
+    if (!content) return json(200, { id, filename, mimeType: meta.mime_type, size: meta.size_bytes });
+    const upstream = await files.content(cfg, id, request.signal);
+    if (!upstream.ok || !upstream.body) return json(upstream.status === 404 ? 404 : 502, { error: upstream.status === 404 ? "not_found" : "upstream" });
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        // Never shown as a page here: always a download, of a type that runs nothing.
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${filename.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        ...(upstream.headers.get("Content-Length") ? { "Content-Length": upstream.headers.get("Content-Length")! } : {}),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+      },
+    });
+  } catch (error) {
+    if (error instanceof Anthropic.APIError && (error.status === 404 || error.status === 410)) return json(404, { error: "not_found" });
+    return await claudeFailure(error, ctx.deps);
+  }
+}
+
+/** A file name to show and save: its last part only, no control characters, 120 characters at most. */
+export function safeFilename(raw: unknown): string {
+  const name = String(raw ?? "").split(/[\\/]/).pop()!.replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+  const short = Array.from(name).slice(-120).join("");
+  return short && short !== "." && short !== ".." ? short : "file";
+}
+
 /** Anthropic's refusal before the stream began, in the app's words. Out of credit, or over the spend limit: the relay stops itself. */
 export async function claudeFailure(error: unknown, deps: Deps): Promise<Response> {
   if (!(error instanceof Anthropic.APIError)) {
@@ -324,6 +418,8 @@ export async function claudeFailure(error: unknown, deps: Deps): Promise<Respons
   if (error instanceof Anthropic.APIUserAbortError) return json(499, { error: "cancelled" });
   if (error instanceof Anthropic.APIConnectionError) return json(502, { error: "upstream_unreachable" });
   console.error("claude refused", error.status, error.type, error.errorCode, error.requestID);
+  // What was wrong with a request the relay built (a tool, a container): Anthropic names the field, not the conversation.
+  if (error.status === 400) console.error("claude refused because", String(error.message).slice(0, 300));
   if (error.errorCode === "enforced_spend_limit_reached") {
     await deps.registry.pause("limit");
     return json(503, { error: "unavailable", reason: "paused_limit" });
