@@ -5,7 +5,27 @@
 
 import { tableHeadEnd, wholeSyntax } from "./mdsource.js";
 
-/** One `data:` line's event, or null for anything else. */
+/** Every file_id in a code execution result, however deep (as the relay reads them). */
+function fileIDs(value, found = [], depth = 0) {
+  if (depth > 6 || value === null || typeof value !== "object") return found;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "file_id" && typeof item === "string" && /^[A-Za-z0-9_-]{6,128}$/.test(item) && !found.includes(item)) found.push(item);
+    else if (typeof item === "object") fileIDs(item, found, depth + 1);
+  }
+  return found;
+}
+
+/** A page the reply searched or cited: its address and title, only http(s). */
+function page(value) {
+  const url = typeof value?.url === "string" && /^https?:\/\//i.test(value.url) ? value.url : null;
+  return url ? { url, title: typeof value.title === "string" && value.title.trim() ? value.title.trim() : url } : null;
+}
+
+/**
+ * One `data:` line's event, or null for anything else. Besides the text:
+ * the server tools a reply used (web search, code execution), the pages
+ * it searched and cited, the files it made, and its container.
+ */
 export function streamEvent(line) {
   if (line.startsWith(":")) return { type: "alive" };
   if (!line.startsWith("data:")) return null;
@@ -16,23 +36,42 @@ export function streamEvent(line) {
     return null;
   }
   switch (object?.type) {
-    case "message_start": return { type: "started", model: object.message?.model ?? "" };
+    case "message_start": {
+      const container = object.message?.container?.id;
+      return { type: "started", model: object.message?.model ?? "", ...(typeof container === "string" ? { container } : {}) };
+    }
     case "content_block_start": {
       const block = object.content_block ?? {};
+      const index = object.index;
       if (block.type === "thinking" || block.type === "redacted_thinking") return { type: "thinking" };
-      if (block.type === "text" && block.text) return { type: "text", text: block.text };
+      if (block.type === "text") return { type: "textStart", index, text: block.text ?? "" };
+      if (block.type === "server_tool_use") return { type: "toolStart", index, name: String(block.name ?? "") };
+      if (block.type === "web_search_tool_result") {
+        if (!Array.isArray(block.content)) return { type: "searchFailed", code: String(block.content?.error_code ?? "unavailable") };
+        return { type: "searchResults", pages: block.content.map(page).filter(Boolean) };
+      }
+      if (typeof block.type === "string" && block.type.endsWith("code_execution_tool_result")) return { type: "files", ids: fileIDs(block.content) };
       return { type: "alive" };
     }
     case "content_block_delta": {
       const delta = object.delta ?? {};
       if (delta.type === "text_delta") return { type: "text", text: delta.text ?? "" };
       if (delta.type === "thinking_delta" || delta.type === "signature_delta") return { type: "thinking" };
+      if (delta.type === "input_json_delta") return { type: "toolInput", index: object.index, json: delta.partial_json ?? "" };
+      if (delta.type === "citations_delta") {
+        const cited = page(delta.citation);
+        return cited ? { type: "cited", page: cited } : { type: "alive" };
+      }
       return { type: "alive" };
     }
+    case "content_block_stop": return { type: "blockStop", index: object.index };
     case "message_delta": {
       const reason = object.delta?.stop_reason;
+      const container = object.delta?.container?.id ?? object.container?.id;
       if (reason === "refusal") return { type: "refused" };
       if (reason === "max_tokens") return { type: "cutOff" };
+      if (reason === "pause_turn") return { type: "paused", ...(typeof container === "string" ? { container } : {}) };
+      if (typeof container === "string") return { type: "container", container };
       return { type: "alive" };
     }
     case "message_stop": return { type: "done" };

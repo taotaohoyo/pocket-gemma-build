@@ -80,6 +80,15 @@ check("refusal", streamEvent('data: {"type":"message_delta","delta":{"stop_reaso
 check("cut off", streamEvent('data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}'), { type: "cutOff" });
 check("an error in the stream", streamEvent('data: {"type":"error","error":{"type":"overloaded_error"}}'), { type: "failed", error: "overloaded_error" });
 check("event names are not data", streamEvent("event: ping"), null);
+check("a search starts", streamEvent('data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"s","name":"web_search","input":{}}}'), { type: "toolStart", index: 1, name: "web_search" });
+check("its query comes in pieces", streamEvent('data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":"}}'), { type: "toolInput", index: 1, json: '{"query":' });
+check("the pages it found, http(s) only", streamEvent('data: {"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://a.example/x","title":"A","encrypted_content":"e"},{"type":"web_search_result","url":"javascript:alert(1)","title":"B"}]}}'),
+  { type: "searchResults", pages: [{ url: "https://a.example/x", title: "A" }] });
+check("a search that failed", streamEvent('data: {"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","content":{"type":"web_search_tool_result_error","error_code":"max_uses_exceeded"}}}'), { type: "searchFailed", code: "max_uses_exceeded" });
+check("a page it cites", streamEvent('data: {"type":"content_block_delta","index":3,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://a.example/x","title":"A","cited_text":"…"}}}'), { type: "cited", page: { url: "https://a.example/x", title: "A" } });
+check("the files code made", streamEvent('data: {"type":"content_block_start","index":4,"content_block":{"type":"bash_code_execution_tool_result","content":{"type":"bash_code_execution_result","content":[{"type":"bash_code_execution_output","file_id":"file_abc123"}]}}}'), { type: "files", ids: ["file_abc123"] });
+check("its container", streamEvent('data: {"type":"message_start","message":{"model":"claude-opus-5-5","container":{"id":"container_x1y2z3"}}}'), { type: "started", model: "claude-opus-5-5", container: "container_x1y2z3" });
+check("a paused turn", streamEvent('data: {"type":"message_delta","delta":{"stop_reason":"pause_turn"}}'), { type: "paused" });
 
 // Code colours, as the app's.
 check("Swift's name", displayName("swift"), "Swift");

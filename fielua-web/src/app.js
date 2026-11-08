@@ -56,9 +56,14 @@ const state = {
 function loadPrefs() {
   try {
     const value = JSON.parse(localStorage.getItem("fielua.prefs") ?? "{}");
-    return { model: typeof value.model === "string" ? value.model : TOP.model, efforts: typeof value.efforts === "object" && value.efforts ? value.efforts : {} };
+    return {
+      model: typeof value.model === "string" ? value.model : TOP.model,
+      efforts: typeof value.efforts === "object" && value.efforts ? value.efforts : {},
+      // The plus menu's switches: off until turned on, then kept on this device.
+      tools: { webSearch: value.tools?.webSearch === true, files: value.tools?.files === true },
+    };
   } catch {
-    return { model: TOP.model, efforts: {} };
+    return { model: TOP.model, efforts: {}, tools: { webSearch: false, files: false } };
   }
 }
 function savePrefs() {
@@ -73,9 +78,12 @@ function loadChat() {
 }
 function saveChat() {
   const write = (pictures) => sessionStorage.setItem("fielua.chat", JSON.stringify({
-    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments }) => ({
+    ...(state.chat.container ? { container: state.chat.container } : {}),
+    messages: state.chat.messages.map(({ role, text, model, effort, served, end, error, attachments, search, files }) => ({
       role, text, model, effort, served, end, error,
       ...(attachments?.length ? { attachments: attachments.map((a) => ({ ...stored(a), thumb: pictures ? a.thumb : undefined })) } : {}),
+      ...(search?.queries.length || search?.pages.length ? { search: { queries: search.queries, pages: search.pages.slice(0, 12), failed: search.failed ?? null } } : {}),
+      ...(files?.length ? { files: files.map(({ id, name, size, mimeType }) => ({ id, name, size, mimeType })) } : {}),
     })),
   }));
   try {
@@ -358,6 +366,7 @@ async function refreshStatus() {
   }
   renderTopbar();
   renderCredit();
+  renderTools();
   updateBanner();
 }
 
@@ -424,9 +433,10 @@ function renderThread() {
 function messageElement(message) {
   if (message.role === "user") return sentElement(message);
   const reply = h("div", { class: "reply" });
-  const element = h("div", { class: "msg assistant" }, reply);
+  const work = h("div", { class: "work", hidden: true });
+  const element = h("div", { class: "msg assistant" }, work, reply);
   const view = new ReplyView(reply);
-  state.views.set(message, { element, reply, view });
+  state.views.set(message, { element, reply, view, work });
   if (message.text) view.update(message.text, { live: false, animate: false });
   finishElement(message);
   return element;
@@ -441,6 +451,11 @@ const ICONS = {
   folder: ["M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"],
   doc: ["M7 3.5h6.5L18 8v12.5H7Z", "M13.5 3.5V8H18", "M9.5 12.5h6M9.5 16h4"],
   play: ["M9 6.8v10.4l8.2-5.2Z"],
+  globe: ["M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17Z", "M3.5 12h17", "M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z"],
+  make: ["M7 3.5h6.5L18 8v12.5H7Z", "M13.5 3.5V8H18", "M12.5 11v6M9.5 14h6"],
+  out: ["M8.5 15.5 15.5 8.5M10 8.5h5.5V14"],
+  check: ["m5.5 12.5 4 4 9-9"],
+  down: ["M12 4.5v10.5M7.5 10.5 12 15l4.5-4.5", "M6 19h12"],
   xmark: ["M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"],
 };
 
@@ -646,8 +661,15 @@ function wireAttachments() {
     for (const item of menu.querySelectorAll("[data-pick]")) item.disabled = !!state.streaming || state.preparing > 0 || full;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
-    menu.querySelector("[data-pick]:not(:disabled)")?.focus({ preventScroll: true });
+    renderTools();
+    menu.querySelector("button:not(:disabled):not([hidden])")?.focus({ preventScroll: true });
   });
+  for (const row of menu.querySelectorAll("[data-tool]")) {
+    row.addEventListener("click", () => {
+      setTool(row.dataset.tool, !state.prefs.tools[row.dataset.tool]);
+      close();
+    });
+  }
   for (const item of menu.querySelectorAll("[data-pick]")) {
     const input = $(`pick-${item.dataset.pick}`);
     input.accept = ACCEPT[item.dataset.pick];
@@ -688,6 +710,178 @@ function wireAttachments() {
   $("viewer").addEventListener("close", () => $("viewer-body").replaceChildren());
 }
 
+// MARK: Web search and files a reply made
+
+/** The tools the next question goes with, when the relay offers them and the person turned any on. */
+function toolsFor() {
+  if (!state.status?.tools) return null;
+  const { webSearch, files } = state.prefs.tools;
+  if (!webSearch && !files) return null;
+  return { webSearch, files, ...(files && state.chat.container ? { container: state.chat.container } : {}) };
+}
+
+const TOOL_LABELS = {
+  webSearch: { name: "ウェブ検索", short: "検索", icon: "globe" },
+  files: { name: "ファイル作成", short: "ファイル", icon: "make" },
+};
+
+/** While a tool is on: a pill beside the plus that says so in the accent color and turns it off (the app's ウェブ検索). */
+function renderTools() {
+  const offered = !!state.status?.tools;
+  const pills = $("tool-pills");
+  pills.replaceChildren(...Object.entries(TOOL_LABELS).filter(([key]) => offered && state.prefs.tools[key]).map(([key, label]) =>
+    h("button", {
+      type: "button", class: "tool-pill", "aria-label": `${label.name}、オン。押すとオフにします`, disabled: !!state.streaming,
+      onclick: () => setTool(key, false),
+    }, icon(label.icon), h("span", { text: label.short }))));
+  for (const row of document.querySelectorAll("#attach-menu [data-tool]")) {
+    row.hidden = !offered;
+    row.disabled = !!state.streaming;
+    row.setAttribute("aria-checked", state.prefs.tools[row.dataset.tool] ? "true" : "false");
+  }
+  $("attach-menu-gap").hidden = !offered;
+  $("attach-menu").classList.toggle("has-checks", offered);
+}
+
+function setTool(key, on) {
+  state.prefs.tools[key] = on;
+  savePrefs();
+  renderTools();
+}
+
+/** The line above a reply: what it searched (the app's WebSearchHeader), or what it is doing now. */
+function renderWork(message) {
+  const entry = state.views.get(message);
+  if (!entry) return;
+  const live = message.end === "streaming" ? message.activity : null;
+  const search = message.search;
+  let text = "";
+  let symbol = "globe";
+  if (live?.kind === "search") text = live.query ? `「${live.query}」をウェブで検索しています…` : "ウェブで検索しています…";
+  else if (live?.kind === "fetch") text = "ページを読んでいます…";
+  else if (live?.kind === "edit") { text = "ファイルを書いています…"; symbol = "make"; }
+  else if (live?.kind === "code") { text = "コードを実行しています…"; symbol = "make"; }
+  else if (search?.queries.length) {
+    const queries = search.queries.map((query) => `「${query}」`).join("");
+    text = search.failed && !search.pages.length ? `${queries}を検索できませんでした` : `${queries}をウェブで検索しました`;
+  }
+  entry.work.hidden = !text;
+  entry.work.classList.toggle("busy", !!live);
+  entry.work.replaceChildren(...(text ? [icon(symbol), h("span", { text })] : []));
+}
+
+function addPages(message, pages, cited) {
+  message.search ??= { queries: [], pages: [], failed: null };
+  for (const page of pages) {
+    const known = message.search.pages.find((item) => item.url === page.url);
+    if (known) known.cited ||= cited;
+    else if (message.search.pages.length < 40) message.search.pages.push({ ...page, cited });
+  }
+}
+
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
+
+/** Below a written reply: the pages it cited (or, citing none, the ones it read), six at most, each opening in a new tab. */
+function sourcesElement(message) {
+  const pages = message.search?.pages ?? [];
+  const cited = pages.filter((page) => page.cited);
+  const list = (cited.length ? cited : pages).slice(0, 6);
+  if (!list.length) return null;
+  return h("div", { class: "sources" }, h("p", { class: "sources-title", text: "情報源" }),
+    list.map((page, index) => h("a", { class: "source", href: page.url, target: "_blank", rel: "noopener noreferrer" },
+      h("span", { class: "source-num", text: String(index + 1) }),
+      h("span", { class: "source-text" }, h("span", { class: "source-name", text: page.title }), h("span", { class: "source-site", text: hostOf(page.url) })),
+      icon("out"))));
+}
+
+/** Types a download keeps; anything else (HTML, SVG, scripts…) goes as plain bytes, so nothing it holds can run here. */
+const SAFE_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain", "text/csv", "text/markdown",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/json", "application/zip"]);
+const previews = new Map();
+
+function fileKind(file) {
+  const name = (file.name ?? "").toLowerCase();
+  const ext = name.includes(".") ? name.split(".").pop() : "";
+  return { pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint", csv: "CSV", txt: "テキスト", md: "テキスト", png: "画像", jpg: "画像", jpeg: "画像", json: "JSON", zip: "ZIP" }[ext] ?? "ファイル";
+}
+
+/** The files a reply made, each with its download button; a picture shows itself too. */
+function filesElement(message) {
+  return h("div", { class: "made-files" }, message.files.map((file) => {
+    const button = h("button", { type: "button", class: "secondary download", "aria-label": `${file.name ?? "ファイル"}をダウンロード` }, icon("down"), h("span", { text: "保存" }));
+    button.addEventListener("click", () => downloadFile(file, button));
+    const card = h("div", { class: "made-file" },
+      icon("doc"),
+      h("span", { class: "file-text" }, h("span", { class: "file-name", text: file.name ?? "ファイル" }),
+        h("span", { class: "file-meta", text: file.name ? `${fileKind(file)}${file.size ? ` · ${sizeLabel(file.size)}` : ""}` : "読み込んでいます…" })),
+      button);
+    if (/^image\/(png|jpeg|gif|webp)$/.test(file.mimeType ?? "") && (file.size ?? 0) < 8 * 1024 * 1024) {
+      const picture = h("img", { class: "made-picture", alt: file.name ?? "", hidden: true });
+      card.prepend(picture);
+      card.classList.add("with-picture");
+      fileBlob(file).then((blob) => {
+        if (!previews.has(file.id)) previews.set(file.id, URL.createObjectURL(blob));
+        picture.src = previews.get(file.id);
+        picture.hidden = false;
+      }).catch(() => {});
+    }
+    return card;
+  }));
+}
+
+async function fileBlob(file) {
+  const response = await call(`/v1/files/${encodeURIComponent(file.id)}/content`);
+  if (!response.ok) {
+    let body = {};
+    try { body = await response.json(); } catch { body = {}; }
+    throw new RelayError(response.status, body.error ?? "unexpected", body);
+  }
+  const type = SAFE_TYPES.has(file.mimeType) ? file.mimeType : "application/octet-stream";
+  return new Blob([await response.arrayBuffer()], { type });
+}
+
+async function downloadFile(file, button) {
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    const url = URL.createObjectURL(await fileBlob(file));
+    const link = h("a", { href: url, download: file.name ?? "file", hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (error) {
+    toast(error?.code === "not_found" ? "このファイルはもうありません。Anthropic に残るのは 30 日ほどです。" : errorText(error?.status ?? 0, error?.code ?? "network"));
+  } finally {
+    button.disabled = false;
+    button.classList.remove("busy");
+  }
+}
+
+/** The names and sizes of the files a finished reply made (the relay knows them as this person's a moment after the reply ends). */
+async function loadFileInfo(message) {
+  let changed = false;
+  for (const file of message.files ?? []) {
+    if (file.name) continue;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const info = await callJSON(`/v1/files/${encodeURIComponent(file.id)}`);
+        Object.assign(file, { name: info.filename, size: info.size, mimeType: info.mimeType });
+        changed = true;
+        break;
+      } catch (error) {
+        if (!(error instanceof RelayError) || error.code !== "not_found" || attempt === 3) break;
+        await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+      }
+    }
+  }
+  if (changed) {
+    saveChat();
+    finishElement(message);
+  }
+}
+
 function captionFor(message) {
   const parts = [`${modelName(message.model)} · 推論 ${EFFORT[message.effort]?.title ?? message.effort}`];
   if (message.served && message.served !== message.model && !message.served.startsWith(message.model)) parts.push(`${modelName(message.served)} が答えました`);
@@ -709,6 +903,7 @@ function captionFor(message) {
 const END_NOTICES = {
   refused: "Claude はこの質問への回答を控えました。",
   cutOff: "返信が長さの上限に達したため、ここで終わっています。",
+  paused: "調べることが多く、ここで一度止まりました。「続けて」と送ると続きを書きます。",
 };
 
 /** The lines under a finished reply: which model answered, and what stopped it. */
@@ -718,8 +913,14 @@ function finishElement(message) {
   entry.element.querySelector(".thinking")?.remove();
   entry.element.querySelector(".caption")?.remove();
   entry.element.querySelector(".notice")?.remove();
+  entry.element.querySelector(".sources")?.remove();
+  entry.element.querySelector(".made-files")?.remove();
   entry.reply.removeAttribute("aria-busy");
+  renderWork(message);
   if (message.end === "streaming") return;
+  const sources = sourcesElement(message);
+  if (sources) entry.element.append(sources);
+  if (message.files?.length) entry.element.append(filesElement(message));
   const text = message.error ?? END_NOTICES[message.end];
   if (text) {
     const notice = h("div", { class: `notice${message.error ? " error" : ""}`, role: message.error ? "alert" : null }, h("div", { text }));
@@ -795,6 +996,7 @@ function updateComposer() {
   send.setAttribute("aria-label", streaming ? "停止" : "送信");
   const blocked = state.status && !state.status.available;
   send.disabled = streaming ? false : (!input.value.trim() && !state.draft.length) || state.preparing > 0 || blocked;
+  for (const pill of $("tool-pills").children) pill.disabled = streaming;
 }
 
 function autoGrow() {
@@ -847,7 +1049,8 @@ async function ask() {
   const turns = contextTurns(state.chat.messages);
   if (!turns.length) return;
   if (turns.some((turn) => bytes(turn.content) > MAX_TURN_BYTES)) { toast("メッセージが長すぎます。新しい会話でお試しください。"); return; }
-  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming" };
+  const tools = toolsFor();
+  const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}) };
   state.chat.messages.push(message);
   const element = messageElement(message);
   const entry = state.views.get(message);
@@ -889,8 +1092,10 @@ async function ask() {
     entry.view.update(pacer.text, { live: false, animate: true });
     message.text = pacer.text;
     if (message.end === "streaming") message.end = "done";
+    message.activity = null;
     state.streaming = null;
     finishElement(message);
+    if (message.files?.length) loadFileInfo(message);
     saveChat();
     updateComposer();
     if (isPinned(160)) scrollToEnd(false);
@@ -904,7 +1109,7 @@ async function ask() {
 
   let response;
   try {
-    response = await call("/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort }, signal: controller.signal });
+    response = await call("/v1/messages", { method: "POST", body: { messages: turns, model: model.id, effort, ...(tools ? { tools } : {}) }, signal: controller.signal });
   } catch (error) {
     if (error?.name === "AbortError") message.end = "stopped";
     else fail(errorText(0, "network"));
@@ -949,13 +1154,57 @@ async function ask() {
 
   run.frame = requestAnimationFrame(() => render());
   let sawDone = false;
+  // The server tools' blocks by index (their input comes in pieces), and whether text follows one.
+  const toolBlocks = new Map();
+  let afterTool = false;
+  const keepContainer = (id) => {
+    if (id && state.chat.container !== id) { state.chat.container = id; saveChat(); }
+  };
+  const working = (activity) => {
+    message.activity = activity;
+    renderWork(message);
+  };
   try {
     for await (const event of readEvents(response.body)) {
-      if (event.type === "started") message.served = event.model;
+      if (event.type === "started") { message.served = event.model; keepContainer(event.container); }
       else if (event.type === "thinking") {
         const label = thinking.querySelector(".label");
         if (label && !label.textContent) label.textContent = "考えています";
+      } else if (event.type === "textStart") {
+        // Text after a search or code starts a paragraph of its own; text between citations runs on.
+        if (afterTool && pacer.text && !pacer.text.endsWith("\n")) pacer.text += "\n\n";
+        afterTool = false;
+        if (message.activity) working(null);
+        pacer.text += event.text;
       } else if (event.type === "text") pacer.text += event.text;
+      else if (event.type === "toolStart") {
+        toolBlocks.set(event.index, { name: event.name, json: "" });
+        afterTool = true;
+        const kinds = { web_search: "search", web_fetch: "fetch", text_editor_code_execution: "edit" };
+        working({ kind: kinds[event.name] ?? "code", query: "" });
+      } else if (event.type === "toolInput") {
+        const block = toolBlocks.get(event.index);
+        if (block) block.json += event.json;
+      } else if (event.type === "blockStop") {
+        const block = toolBlocks.get(event.index);
+        toolBlocks.delete(event.index);
+        if (block?.name === "web_search") {
+          let query = "";
+          try { query = String(JSON.parse(block.json || "{}").query ?? "").trim(); } catch { query = ""; }
+          if (query) {
+            message.search ??= { queries: [], pages: [], failed: null };
+            if (!message.search.queries.includes(query) && message.search.queries.length < 10) message.search.queries.push(query);
+            working({ kind: "search", query });
+          }
+        }
+      } else if (event.type === "searchResults") addPages(message, event.pages, false);
+      else if (event.type === "searchFailed") { message.search ??= { queries: [], pages: [], failed: null }; message.search.failed = event.code; }
+      else if (event.type === "cited") addPages(message, [event.page], true);
+      else if (event.type === "files") {
+        message.files ??= [];
+        for (const id of event.ids) if (!message.files.some((file) => file.id === id) && message.files.length < 20) message.files.push({ id });
+      } else if (event.type === "container") keepContainer(event.container);
+      else if (event.type === "paused") { keepContainer(event.container); message.end = "paused"; }
       else if (event.type === "refused") message.end = "refused";
       else if (event.type === "cutOff") message.end = "cutOff";
       else if (event.type === "failed") {
@@ -1107,7 +1356,7 @@ function renderCreditSheet() {
     items.push(ring(credit.percent, h("div", { class: "muted", text: `残り 約 ${formatUSD(credit.remainingUSD)}（推定）` })));
     items.push(h("div", { class: "card" },
       h("p", { text: `${formatTime(credit.setAt)} に入力した残高 ${formatUSD(credit.budgetUSD)} から、それ以降に Fielua（このサイトと iPhone）の返信で使った分 ${formatUSD(credit.spentUSD)} を引いた推定です。` }),
-      h("p", { class: "muted", text: "使った分は、返信ごとのトークン数と Anthropic の公開料金から計算しています。同じ Anthropic アカウントのほかの利用や、途中で止めた返信の細かい分は入らないため、Console の表示と少しずれることがあります。" }),
+      h("p", { class: "muted", text: "使った分は、返信ごとのトークン数と Anthropic の公開料金（ウェブ検索は 1 回 $0.01）から計算しています。同じ Anthropic アカウントのほかの利用や、途中で止めた返信の細かい分は入らないため、Console の表示と少しずれることがあります。" }),
       state.status?.reason === "paused_billing" ? h("p", { text: "Anthropic がクレジット切れと答えたため、0% にしています。" }) : null));
   } else {
     items.push(h("div", { class: "card" }, h("p", { text: "残りのクレジットはまだ入力されていません。" })));
@@ -1199,6 +1448,7 @@ async function renderSettings() {
   items.push(h("div", { class: "card" },
     h("p", { text: "書いたメッセージと添付、この会話のこれまでのやり取りが、Fielua の中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
     h("p", { class: "muted", text: "写真は小さくし、位置情報などを消してから送ります。動画は音声を送らず、いくつかの場面の静止画にします。PDF とテキストはそのまま送ります。" }),
+    h("p", { class: "muted", text: "＋ で「ウェブ検索」をオンにすると、Claude が決めた検索語でウェブを調べます（1 回 $0.01）。「ファイル作成」をオンにすると、Anthropic のサーバーの中でコードを動かしてファイルを作ります。作ったファイルは Anthropic に 30 日ほど残り、作った本人だけが保存できます。" }),
     h("p", { class: "muted", text: "中継サーバーは会話を保存しません。会話はこのタブの中だけにあり、タブを閉じるかログアウトすると消えます。Anthropic は API の利用データを Anthropic の方針に沿って一定期間保持します。答えには誤りが含まれることがあります。" })));
   if ((status?.role ?? me?.role) === "developer") items.push(...await developerSection());
   body.replaceChildren(...items);

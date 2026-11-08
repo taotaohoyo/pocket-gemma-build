@@ -85,8 +85,73 @@ const OFFERED = {
   "claude-sonnet-5-5": ["low", "medium", "high", "xhigh"],
 };
 
-const upstream = { requests: [], closedEarly: 0 };
+const upstream = { requests: [], closedEarly: 0, files: [] };
+// The files a reply's code made, as the Files API keeps them (the chart's picture is drawn in the browser later).
+const MADE = {
+  file_e2e_report: { filename: "週末の予定.csv", mime_type: "text/csv", bytes: Buffer.from("日程,場所,費用\n土曜,浅草,1200\n日曜,上野,2000\n") },
+  file_e2e_chart: { filename: "/mnt/user-data/outputs/費用のグラフ.png", mime_type: "image/png", bytes: Buffer.alloc(0) },
+};
+
+/** A reply that searched the web (and, for 「調べもの」, stopped to continue), or that made two files with code. */
+function toolEvents(question, body) {
+  const types = (body.tools ?? []).map((tool) => tool.type);
+  const events = [["message_start", { type: "message_start", message: { id: "msg_e2e_tools", model: body.model, content: [], usage: { input_tokens: 1200, output_tokens: 1 },
+    ...(types.some((t) => t.startsWith("code_execution")) ? { container: { id: "container_e2e01", expires_at: "2026-12-08T00:00:00Z" } } : {}) } }]];
+  const text = (index, pieces) => {
+    events.push(["content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } }]);
+    for (const piece of pieces) {
+      events.push(["content_block_delta", { type: "content_block_delta", index, delta: typeof piece === "string" ? { type: "text_delta", text: piece } : { type: "citations_delta", citation: piece } }]);
+    }
+    events.push(["content_block_stop", { type: "content_block_stop", index }]);
+  };
+  const tool = (index, name, json, result) => {
+    events.push(["content_block_start", { type: "content_block_start", index, content_block: { type: "server_tool_use", id: `srvtoolu_e2e${index}`, name, input: {} } }]);
+    for (let i = 0; i < json.length; i += 12) events.push(["content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: json.slice(i, i + 12) } }]);
+    events.push(["content_block_stop", { type: "content_block_stop", index }]);
+    events.push({ wait: 900 });
+    events.push(["content_block_start", { type: "content_block_start", index: index + 1, content_block: { tool_use_id: `srvtoolu_e2e${index}`, ...result } }]);
+    events.push(["content_block_stop", { type: "content_block_stop", index: index + 1 }]);
+  };
+  let searches = 0;
+  let stop = "end_turn";
+  if (question === "検索" || question === "調べもの") {
+    if (!types.some((t) => t.startsWith("web_search"))) return null;
+    text(0, ["調べます。"]);
+    tool(1, "web_search", JSON.stringify({ query: "東京 週末の天気" }), { type: "web_search_tool_result", content: [
+      { type: "web_search_result", url: "https://weather.example.jp/tokyo", title: "東京の週末の天気", encrypted_content: "e2e", page_age: "2026-11-08" },
+      { type: "web_search_result", url: "https://www.news.example.com/weekend", title: "週末は晴れ　関東の天気", encrypted_content: "e2e" },
+      { type: "web_search_result", url: "javascript:alert(1)", title: "悪いページ", encrypted_content: "e2e" },
+    ] });
+    searches = 1;
+    if (question === "調べもの") stop = "pause_turn";
+    else text(3, ["週末の東京は", { type: "web_search_result_location", url: "https://weather.example.jp/tokyo", title: "東京の週末の天気", cited_text: "晴れ", encrypted_index: "e2e" }, "**晴れ**です。"]);
+  } else if (question === "ファイル") {
+    if (!types.some((t) => t.startsWith("code_execution"))) return null;
+    text(0, ["表とグラフを作ります。"]);
+    tool(1, "text_editor_code_execution", JSON.stringify({ command: "create", path: "/mnt/user-data/outputs/週末の予定.csv", file_text: "日程,場所" }),
+      { type: "text_editor_code_execution_tool_result", content: { type: "text_editor_code_execution_create_result", is_file_update: false } });
+    tool(3, "bash_code_execution", JSON.stringify({ command: "python chart.py" }), { type: "bash_code_execution_tool_result", content: {
+      type: "bash_code_execution_result", stdout: "ok", stderr: "", return_code: 0,
+      content: [{ type: "bash_code_execution_output", file_id: "file_e2e_report" }, { type: "bash_code_execution_output", file_id: "file_e2e_chart" }],
+    } });
+    text(5, ["作りました。"]);
+  } else return null;
+  events.push(["message_delta", { type: "message_delta", delta: { stop_reason: stop }, usage: { output_tokens: 150, ...(searches ? { server_tool_use: { web_search_requests: searches } } : {}) } }]);
+  events.push(["message_stop", { type: "message_stop" }]);
+  return events;
+}
+
 const anthropic = createServer((req, res) => {
+  const filePath = /^\/v1\/files\/([^/?]+)(\/content)?(?:\?.*)?$/.exec(req.url);
+  if (req.method === "GET" && filePath) {
+    upstream.files.push({ id: filePath[1], content: !!filePath[2], headers: req.headers });
+    const file = MADE[filePath[1]];
+    if (!file) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "File not found" } })); return; }
+    if (filePath[2]) { res.writeHead(200, { "Content-Type": file.mime_type, "Content-Length": file.bytes.length }); res.end(file.bytes); return; }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ type: "file", id: filePath[1], filename: file.filename, mime_type: file.mime_type, size_bytes: file.bytes.length, created_at: "2026-11-08T00:00:00Z", downloadable: true }));
+    return;
+  }
   if (req.method === "GET" && req.url.startsWith("/v1/models")) {
     const data = Object.entries(OFFERED).map(([id, levels]) => {
       const effort = { supported: true };
@@ -127,6 +192,21 @@ const anthropic = createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const send = (event, payload) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    const scripted = toolEvents(question, body);
+    if (scripted) {
+      let closed = false;
+      res.on("close", () => { closed = true; });
+      (async () => {
+        for (const item of scripted) {
+          if (closed) return;
+          if (item.wait) { await sleep(item.wait); continue; }
+          send(...item);
+          await sleep(15);
+        }
+        res.end();
+      })();
+      return;
+    }
     send("message_start", { type: "message_start", message: { id: "msg_e2e", model: body.model, content: [], usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } });
     let index = 0;
     const pieces = [];
@@ -258,7 +338,8 @@ async function waitReply(page, timeout = 20000) {
 
 const lastReply = (page) => page.locator(".msg.assistant").last();
 
-const browser = await chromium.launch();
+// A UTF-8 locale, as people's phones and PCs have: under Linux's plain C locale Chromium saves 週末の予定.csv as "download".
+const browser = await chromium.launch({ env: { ...process.env, LANG: "C.UTF-8", LC_ALL: "C.UTF-8" } });
 try {
   // MARK: Unsigned-in
   const iphone = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Mobile/15E148 Safari/604.1" };
@@ -575,6 +656,113 @@ try {
   check("then, Claude is told they were attached but are not sent again", named.includes("「東京駅.jpg」") && named.includes("今回は送っていません") && !reloaded.some((m) => Array.isArray(m.content)), named.slice(-200));
   check("nothing of the attachments' data is kept in the tab", !(await dev.evaluate(() => sessionStorage.getItem("fielua.chat"))).includes(images[0].source.data.slice(2000, 2060)));
 
+  // MARK: Web search and files a reply made
+  MADE.file_e2e_chart.bytes = Buffer.from(await dev.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#FFFDF9";
+    context.fillRect(0, 0, 640, 360);
+    context.fillStyle = "#E8A012";
+    context.fillRect(140, 150, 120, 170);
+    context.fillRect(380, 60, 120, 260);
+    return canvas.toDataURL("image/png").split(",")[1];
+  }), "base64");
+  const chatBeforeTools = await dev.evaluate(() => sessionStorage.getItem("fielua.chat"));
+  const spent = () => dev.evaluate(async (relayURL) => {
+    const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
+    return (await (await fetch(`${relayURL}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).credit?.spentUSD ?? null;
+  }, relay);
+  await dev.click("#new-chat");
+  await dev.click("#attach");
+  await dev.waitForSelector("#attach-menu:not([hidden])");
+  const toolRows = await dev.evaluate(() => [...document.querySelectorAll("#attach-menu [data-tool]")].map((row) => `${row.dataset.tool}:${row.hidden ? "hidden" : "shown"}:${row.getAttribute("aria-checked")}`));
+  check("the plus menu has ウェブ検索 and ファイル作成, both off", toolRows.join(",") === "webSearch:shown:false,files:shown:false", toolRows.join(","));
+  await dev.click("#attach-menu [data-tool=webSearch]");
+  check("turned on, the menu closes and the 検索 pill shows by the plus", await dev.isHidden("#attach-menu") && (await dev.locator("#tool-pills .tool-pill").allTextContents()).join() === "検索");
+  await dev.screenshot({ path: join(SHOTS, "check-tools-pill.png") });
+  const spentBeforeSearch = await spent();
+  const requestsBefore = upstream.requests.length;
+  await sendMessage(dev, "検索");
+  await dev.waitForFunction(() => document.querySelector(".msg.assistant:last-child .work.busy")?.textContent.includes("「東京 週末の天気」をウェブで検索しています"), null, { timeout: 8000 });
+  check("while it searches, the line above says what", true);
+  check("the pill can't be turned off meanwhile", await dev.isDisabled("#tool-pills .tool-pill"));
+  await waitReply(dev);
+  const searched = upstream.requests[requestsBefore].body;
+  check("the question goes with web search (and fetch), at most 5 each, nothing for files",
+    searched.tools?.map((t) => `${t.type}/${t.max_uses}`).join() === "web_search_20260209/5,web_fetch_20260209/5" && !searched.container, JSON.stringify(searched.tools));
+  check("Claude is told it may search", JSON.stringify(searched.system).includes("search the web"));
+  const searchView = await dev.evaluate(() => {
+    const reply = document.querySelector(".msg.assistant:last-child");
+    return {
+      work: reply.querySelector(".work")?.textContent, busy: reply.querySelector(".work")?.classList.contains("busy"),
+      text: reply.querySelector(".reply")?.textContent,
+      sources: [...reply.querySelectorAll(".source")].map((a) => `${a.querySelector(".source-name").textContent}|${a.querySelector(".source-site").textContent}|${a.target}|${a.rel}`),
+      hrefs: [...reply.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    };
+  });
+  check("after: 「…」をウェブで検索しました above the reply", searchView.work === "「東京 週末の天気」をウェブで検索しました" && !searchView.busy, searchView.work);
+  check("the text after the search starts a paragraph of its own", searchView.text.startsWith("調べます。") && searchView.text.includes("週末の東京は晴れです。"), searchView.text);
+  check("情報源 lists the page it cited, opening in a new tab", searchView.sources.join() === "東京の週末の天気|weather.example.jp|_blank|noopener noreferrer", searchView.sources.join(" / "));
+  check("no javascript: address is ever a link", !searchView.hrefs.some((href) => /^javascript:/i.test(href ?? "")));
+  let spentOnSearch = 0;
+  for (let i = 0; i < 20 && spentOnSearch < 0.01; i++) { await sleep(300); spentOnSearch = (await spent()) - spentBeforeSearch; }
+  check("the search's $0.01 is counted in the credit estimate", spentOnSearch >= 0.01 && spentOnSearch < 0.05, `$${spentOnSearch.toFixed(4)}`);
+  await dev.screenshot({ path: join(SHOTS, "check-tools-search.png") });
+
+  await sendMessage(dev, "調べもの");
+  await waitReply(dev);
+  check("a reply paused mid-research says how to go on", (await lastReply(dev).locator(".notice").textContent()).includes("「続けて」と送る"));
+
+  await dev.click("#tool-pills .tool-pill");
+  check("the pill turns search off", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
+  await dev.click("#attach");
+  await dev.click("#attach-menu [data-tool=files]");
+  check("ファイル作成 on: its pill shows", (await dev.locator("#tool-pills .tool-pill").allTextContents()).join() === "ファイル");
+  const filesBefore = upstream.requests.length;
+  await sendMessage(dev, "ファイル");
+  await dev.waitForFunction(() => /ファイルを書いています|コードを実行しています/.test(document.querySelector(".msg.assistant:last-child .work.busy")?.textContent ?? ""), null, { timeout: 8000 });
+  check("while code runs, the line above says so", true);
+  await waitReply(dev);
+  const making = upstream.requests[filesBefore].body;
+  check("the question goes with code execution and the PDF, Word, Excel and PowerPoint skills",
+    making.tools?.map((t) => t.type).join() === "code_execution_20260521" && making.container?.skills?.map((x) => x.skill_id).join() === "pdf,docx,xlsx,pptx" && !making.container.id, JSON.stringify(making.container));
+  check("Claude is told where to save files", JSON.stringify(making.system).includes("$OUTPUT_DIR"));
+  await dev.waitForFunction(() => document.querySelectorAll(".msg.assistant:last-child .made-file .file-name").length === 2
+    && ![...document.querySelectorAll(".msg.assistant:last-child .made-file .file-meta")].some((e) => e.textContent.includes("読み込んでいます")), null, { timeout: 10000 });
+  const madeView = await dev.evaluate(() => [...document.querySelectorAll(".msg.assistant:last-child .made-file")].map((card) =>
+    `${card.querySelector(".file-name").textContent}|${card.querySelector(".file-meta").textContent}|${card.querySelector(".made-picture") ? "picture" : "-"}`));
+  check("the files it made show under the reply, with names, kinds and sizes", madeView[0]?.startsWith("週末の予定.csv|CSV · ") && madeView[1]?.startsWith("費用のグラフ.png|画像 · "), madeView.join(" / "));
+  check("the folder part of a name is dropped", !madeView.join().includes("/mnt/"));
+  await dev.waitForSelector(".msg.assistant:last-child .made-picture:not([hidden])", { timeout: 8000 });
+  check("a picture it made shows itself", (await dev.getAttribute(".msg.assistant:last-child .made-picture", "src")).startsWith("blob:"));
+  const [download] = await Promise.all([dev.waitForEvent("download"), dev.locator(".msg.assistant:last-child .made-file .download").first().click()]);
+  const downloaded = readFileSync(await download.path(), "utf8");
+  check("保存 downloads the file as it was made", download.suggestedFilename() === "週末の予定.csv" && downloaded === MADE.file_e2e_report.bytes.toString("utf8"), download.suggestedFilename());
+  const fileCalls = upstream.files.filter((f) => f.id === "file_e2e_report");
+  check("the relay fetches it from Anthropic with the key (never the page)", fileCalls.length >= 2 && fileCalls.every((f) => f.headers.authorization === "Bearer sk-ant-e2e-stand-in"));
+  const devToken = await dev.evaluate(() => JSON.parse(sessionStorage.getItem("fielua.session")).token);
+  const directResponse = await fetch(`${relay}/v1/files/file_e2e_report/content`, { headers: { Authorization: `Bearer ${devToken}`, Origin: `http://localhost:${webPort}` } });
+  const direct = { type: directResponse.headers.get("content-type"), disposition: directResponse.headers.get("content-disposition"), csp: directResponse.headers.get("content-security-policy") };
+  check("from the relay, a file is always a download of plain bytes", direct.type === "application/octet-stream" && direct.disposition?.startsWith("attachment;") && direct.disposition.includes("filename*=UTF-8''") && direct.csp?.includes("sandbox"), JSON.stringify(direct));
+  await dev.screenshot({ path: join(SHOTS, "check-tools-files.png") });
+
+  await sendMessage(dev, "ファイル");
+  await waitReply(dev);
+  check("the next question goes on in the same container", upstream.requests.at(-1).body.container?.id === "container_e2e01");
+  await dev.reload();
+  await dev.waitForSelector("#chat:not([hidden])");
+  const afterReload = await dev.evaluate(() => ({
+    sources: document.querySelectorAll(".source").length, files: document.querySelectorAll(".made-file").length,
+    pill: [...document.querySelectorAll("#tool-pills .tool-pill")].map((e) => e.textContent).join(),
+    work: [...document.querySelectorAll(".work:not([hidden])")].map((e) => e.textContent),
+  }));
+  const chatWithTools = await dev.evaluate(() => sessionStorage.getItem("fielua.chat"));
+  check("after reloading, 情報源, the files and the switch are still there", afterReload.sources === 3 && afterReload.files === 4 && afterReload.pill === "ファイル", JSON.stringify(afterReload));
+  await dev.click("#tool-pills .tool-pill");
+  check("all off: the next question goes without tools", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
+
   // MARK: A friend
   await dev.click("#settings-button");
   await dev.waitForSelector("#settings-sheet[open] .person", { timeout: 10000 });
@@ -621,6 +809,12 @@ try {
   await friend.click("#send");
   await waitReply(friend);
   check("once on, the friend chats", (await lastReply(friend).locator(".reply").textContent()).includes("受け取りました"));
+  const friendDownload = await friend.evaluate(async (relayURL) => {
+    const token = JSON.parse(sessionStorage.getItem("fielua.session")).token;
+    const r = await fetch(`${relayURL}/v1/files/file_e2e_report/content`, { headers: { Authorization: `Bearer ${token}` } });
+    return r.status;
+  }, relay);
+  check("a friend can't download the developer's files", friendDownload === 404, `status ${friendDownload}`);
   await friend.screenshot({ path: join(SHOTS, "check-pc-friend.png") });
 
   // MARK: Out of credit
@@ -647,7 +841,7 @@ try {
 
   // MARK: Dark
   await dev.emulateMedia({ colorScheme: "dark" });
-  await dev.locator(".msg.assistant .reply h2").first().scrollIntoViewIfNeeded();
+  await dev.locator(".msg.assistant .made-file").first().scrollIntoViewIfNeeded();
   await dev.screenshot({ path: join(SHOTS, "check-dark.png") });
 
   check("no page errors on the iPhone", devErrors.length === 0, devErrors.join(" | "));
@@ -655,7 +849,7 @@ try {
 
   // MARK: Pictures for people (2x)
   if (PEOPLE) {
-    const saved = await dev.evaluate(() => ({ session: sessionStorage.getItem("fielua.session"), chat: sessionStorage.getItem("fielua.chat") }));
+    const saved = await dev.evaluate((chat) => ({ session: sessionStorage.getItem("fielua.session"), chat }), chatBeforeTools);
     const chat = JSON.parse(saved.chat);
     chat.messages = chat.messages.slice(0, 2);
     const seed = (context) => context.addInitScript(([session, conversation]) => {
@@ -711,6 +905,34 @@ try {
         await page.click("#attach");
         await sleep(400);
         await page.screenshot({ path: join(PEOPLE, "iphone-attach-menu.png") });
+      }
+      await context.close();
+    }
+    // A reply that searched, one that made files, and the plus menu with its switches.
+    const tooled = JSON.parse(chatWithTools);
+    const searchAt = tooled.messages.findIndex((m) => m.search?.pages?.some((p) => p.cited));
+    const filesAt = tooled.messages.findIndex((m) => m.files?.length);
+    const shown = [...tooled.messages.slice(searchAt - 1, searchAt + 1), ...tooled.messages.slice(filesAt - 1, filesAt + 1)];
+    for (const scheme of ["light", "dark"]) {
+      const context = await browser.newContext({ viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: scheme });
+      await context.addInitScript(([session, conversation]) => {
+        sessionStorage.setItem("fielua.session", session);
+        sessionStorage.setItem("fielua.chat", conversation);
+        localStorage.setItem("fielua.prefs", JSON.stringify({ tools: { webSearch: true, files: true } }));
+      }, [saved.session, JSON.stringify({ messages: shown, container: tooled.container })]);
+      const page = await context.newPage();
+      await page.goto(page0);
+      await page.waitForSelector(".made-picture:not([hidden])", { timeout: 10000 });
+      await sleep(400);
+      await page.evaluate(() => { const s = document.getElementById("scroller"); s.scrollTo({ top: s.scrollHeight }); });
+      await sleep(200);
+      await page.screenshot({ path: join(PEOPLE, `iphone-tools-${scheme}.png`) });
+      if (scheme === "light") {
+        await page.evaluate(() => document.getElementById("scroller").scrollTo({ top: 0 }));
+        await page.screenshot({ path: join(PEOPLE, "iphone-tools-search.png") });
+        await page.click("#attach");
+        await sleep(400);
+        await page.screenshot({ path: join(PEOPLE, "iphone-tools-menu.png") });
       }
       await context.close();
     }

@@ -108,7 +108,11 @@
         <button type="button" role="menuitem" data-pick="photos"><span>写真</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5.5h12a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 18 18.5H6A2.5 2.5 0 0 1 3.5 16V8A2.5 2.5 0 0 1 6 5.5Z"/><path d="m4 16.5 4.5-4.5 3.5 3.5 2.5-2.5 5.5 5.5"/><path d="M15.5 9.5h.01"/></svg></button>
         <button type="button" role="menuitem" data-pick="files"><span>ファイル</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></button>
         <button type="button" role="menuitem" data-pick="videos"><span>動画</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 6.5h8a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5h-8A2.5 2.5 0 0 1 3 15V9a2.5 2.5 0 0 1 2.5-2.5Z"/><path d="m16 10.5 5-3v9l-5-3"/></svg></button>
+        <div id="attach-menu-gap" class="menu-gap" role="separator" hidden></div>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-tool="webSearch" hidden><svg class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5.5 12.5 4 4 9-9"/></svg><span>ウェブ検索</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17Z"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z"/></svg></button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-tool="files" hidden><svg class="menu-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5.5 12.5 4 4 9-9"/></svg><span>ファイル作成</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h6.5L18 8v12.5H7Z"/><path d="M13.5 3.5V8H18"/><path d="M12.5 11v6M9.5 14h6"/></svg></button>
       </div>
+      <div id="tool-pills" class="tool-pills"></div>
       <input type="file" id="pick-photos" multiple hidden>
       <input type="file" id="pick-files" multiple hidden>
       <input type="file" id="pick-videos" multiple hidden>

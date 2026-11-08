@@ -484,7 +484,7 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 .attach-menu {
   position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 10; min-width: 232px; padding: 0;
   border-radius: 16px; overflow: hidden;
-  background: color-mix(in srgb, var(--card) 94%, transparent);
+  background: color-mix(in srgb, var(--card) 98%, transparent);
   -webkit-backdrop-filter: saturate(180%) blur(24px); backdrop-filter: saturate(180%) blur(24px);
   border: 0.5px solid var(--input-border); box-shadow: 0 12px 40px rgba(60, 40, 10, 0.16), 0 1px 3px rgba(60, 40, 10, 0.08);
   transform-origin: 18px 100%; animation: menu-open 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
@@ -561,3 +561,71 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 .viewer-body { flex: 1; min-height: 0; display: grid; place-items: center; padding: 8px 16px calc(var(--safe-bottom) + 16px); }
 .viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; border-radius: 12px; display: block; }
 .composer-area.has-tray { background: linear-gradient(to bottom, transparent, var(--paper) 12px); }
+
+/* MARK: Web search and files (the iPhone app's ウェブ検索 pill, header and 情報源) */
+
+/* The plus menu's switches: iOS's check before the label, every row indented to match. */
+.menu-gap { height: 8px; background: var(--chip); border-top: 0.5px solid var(--md-line); }
+.menu-gap + button { border-top: 0 !important; }
+.attach-menu.has-checks button { position: relative; padding-left: 40px; }
+.attach-menu .menu-check { position: absolute; left: 13px; top: 50%; width: 18px; height: 18px; margin-top: -9px; stroke-width: 2.2; opacity: 0; }
+.attach-menu button[aria-checked="true"] .menu-check { opacity: 1; }
+.attach-menu button > span { flex: 1; }
+
+/* While a tool is on: its pill beside the plus, in the deep honey, which turns it off. */
+.tool-pills { display: flex; gap: 6px; flex: none; }
+.tool-pills:empty { display: none; }
+.tool-pill {
+  flex: none; height: 34px; margin: 3px 0; padding: 0 11px 0 9px; border: 0; border-radius: 17px;
+  display: inline-flex; align-items: center; gap: 4px; background: var(--chip); color: var(--active);
+  font-size: 15px; font-weight: 500; white-space: nowrap; animation: tray-in 0.22s ease-out;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.tool-pill:active:not(:disabled) { transform: scale(0.94); }
+.tool-pill:disabled { opacity: 0.5; cursor: default; }
+.tool-pill .icon { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Where the names don't fit (two pills on a phone, or any on the narrowest), the symbols alone. */
+@media (max-width: 430px) {
+  .tool-pills:has(.tool-pill + .tool-pill) .tool-pill { width: 34px; padding: 0; justify-content: center; }
+  .tool-pills:has(.tool-pill + .tool-pill) .tool-pill span { display: none; }
+}
+@media (max-width: 350px) {
+  .tool-pill { width: 34px; padding: 0; justify-content: center; }
+  .tool-pill span { display: none; }
+}
+
+/* Above a reply: what it searched, or what it is doing now (the globe pulses meanwhile). */
+.work { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 8px; font-size: 13px; line-height: 18px; color: var(--secondary); }
+.work .icon { width: 16px; height: 16px; flex: none; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.work.busy .icon { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Below it: the pages it cited, each opening in a new tab. Content, so no glass. */
+.sources {
+  margin-top: 14px; padding: 10px 12px; border-radius: 14px; display: grid; gap: 2px;
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+}
+.sources-title { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--secondary); }
+.source { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; color: var(--ink); text-decoration: none; min-width: 0; }
+.source-num { min-width: 14px; text-align: right; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--secondary); }
+.source-text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.source-name { font-size: 13px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source-site { font-size: 11px; line-height: 1.3; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source .icon { width: 13px; height: 13px; flex: none; align-self: center; fill: none; stroke: var(--placeholder); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.source:hover .source-name { text-decoration: underline; text-underline-offset: 2px; }
+
+/* The files it made: a card each with 保存; a picture shows itself above. */
+.made-files { margin-top: 14px; display: grid; gap: 8px; max-width: 420px; }
+.made-file {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 10px 10px 12px; border-radius: 14px;
+  background: var(--card); border: 0.5px solid var(--card-stroke); box-shadow: var(--shadow);
+}
+.made-file > .icon { width: 26px; height: 26px; flex: none; fill: none; stroke: var(--icon); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.made-file .file-text { flex: 1; }
+.made-file .file-name { font-size: 15px; }
+.made-file .file-meta { font-size: 12px; }
+.made-picture { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: 10px; background: var(--chip); }
+.download { min-height: 34px; padding: 0 14px 0 10px; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+.download .icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.download.busy { opacity: 0.6; }
+@media (prefers-reduced-motion: reduce) { .work.busy .icon, .tool-pill { animation: none; } }
