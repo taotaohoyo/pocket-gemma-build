@@ -8,6 +8,9 @@
 //   GET  /v1/status            the user and whether Claude can answer now
 //   POST /v1/redeem            an invite code for an access token (once)
 //   POST /v1/messages          a reply to the chat's turns, streamed, by the chosen model and level (and tools: web search, files)
+//   POST /v1/replies           the same reply, which a dropped connection doesn't end (reply.ts): its id in X-Fielua-Reply
+//   GET  /v1/replies/:id       that reply again from its first byte, and what is still coming (its own person only)
+//   DELETE /v1/replies/:id     that reply stopped, if it is still being written, and forgotten
 //   GET  /v1/files/:id         a file the person's own reply made: its name, type and size
 //   GET  /v1/files/:id/content the file itself, to download
 //   POST /v1/leave             the user's own registration deleted (its token stops at once)
@@ -31,6 +34,7 @@ import {
 } from "./claude";
 import { joinPage } from "./join";
 import { meter, OUTPUT_ID } from "./meter";
+import { REPLY_ID, type ReplyKeeper } from "./reply";
 import {
   adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newHistoryKey, newID, newInviteCode, normalizeInviteCode,
   tokenHash, webSessionHash,
@@ -95,6 +99,20 @@ export interface Deps {
   models?: (cfg: ClaudeConfig) => Promise<LiveModels | null>;
   waitUntil?: (promise: Promise<unknown>) => void;
   now?: () => number;
+  /** Replies a dropped connection doesn't end, each in a Durable Object of its own (index.ts); none in the tests unless they stand in. */
+  replies?: ReplyHub;
+  /** Inside one of those objects: its reply's keeper. */
+  keeper?: ReplyKeeper;
+}
+
+/** Where the replies of /v1/replies run: the person was checked already, and is checked again there. */
+export interface ReplyHub {
+  /** The request, sent on to a new reply's object, which answers it as /v1/messages would, with the reply's id. */
+  start(request: Request): Promise<Response>;
+  /** A reply again, for its own person: 404 when there is none. */
+  again(id: string, owner: string): Promise<Response>;
+  /** A reply stopped and forgotten: 404 when there was none. */
+  end(id: string, owner: string): Promise<Response>;
 }
 
 /** The Files API as the relay uses it: a file's details, and its content as a stream. */
@@ -155,6 +173,9 @@ async function route(request: Request, ctx: Context): Promise<Response> {
     if (request.method === "GET" && path === "/v1/status") return await status(request, ctx);
     if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, ctx.deps);
     if (request.method === "POST" && path === "/v1/messages") return await messages(request, ctx);
+    if (request.method === "POST" && path === "/v1/replies") return await startReply(request, ctx);
+    const kept = /^\/v1\/replies\/([^/]+)$/.exec(path);
+    if (kept && (request.method === "GET" || request.method === "DELETE")) return await keptReply(request, ctx, kept[1]!);
     if (request.method === "POST" && path === "/v1/leave") return await leave(request, ctx);
     if (request.method === "GET" && path === "/v1/history-key") return await historyKey(request, ctx);
     const file = /^\/v1\/files\/([^/]+)(\/content)?$/.exec(path);
@@ -189,8 +210,8 @@ function preflight(origin: string | null): Response {
 function withCORS(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);
-  headers.set("Access-Control-Expose-Headers", "X-Fielua-Model, X-Fielua-Effort");
-  headers.append("Vary", "Origin");
+  headers.set("Access-Control-Expose-Headers", "X-Fielua-Model, X-Fielua-Effort, X-Fielua-Reply");
+  if (!/\bOrigin\b/.test(headers.get("Vary") ?? "")) headers.append("Vary", "Origin");
   // No cookies are ever used: the session travels in the Authorization header.
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
@@ -272,6 +293,8 @@ async function status(request: Request, ctx: Context): Promise<Response> {
     attachments: { bytes: Math.floor((attachmentLimits(ctx.env).chars * 3) / 4) },
     // The tools the app may turn on for a reply.
     tools: { webSearch: true, files: true },
+    // Whether a reply can be asked at /v1/replies, to be read again after the connection drops.
+    resumable: !!ctx.deps.replies,
     web: person.session
       ? { expiresAt: person.session.expiresAt, adminUntil: person.role === "developer" ? person.session.createdAt + WEB_ADMIN_FRESH_MS : null }
       : undefined,
@@ -339,10 +362,14 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   if (!chosen.ok) return json(400, { error: chosen.error });
   const tools = await toolChoice(rawTools, person, deps);
   const call = deps.claude ?? streamReply;
+  // A kept reply (/v1/replies) ends only when the page says so, or with its age: never with the page's connection.
+  const keeper = deps.keeper ?? null;
+  const signal = keeper ? keeper.begin(person.id) : request.signal;
   let upstream: Response;
   try {
-    upstream = await call(cfg, chosen.choice, parsed.turns, person.id, request.signal, tools);
+    upstream = await call(cfg, chosen.choice, parsed.turns, person.id, signal, tools);
   } catch (error) {
+    keeper?.end(person.id);
     return await claudeFailure(error, deps);
   }
   deps.waitUntil?.(deps.registry.touch(person.id));
@@ -351,7 +378,7 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   if (stream && (counting || tools.files)) {
     // Only the usage is read, for the estimate of the credit left, and the
     // ids of the files code execution made, so they are this person's alone.
-    const metered = meter(stream, chosen.choice.model.id, request.signal, tools.files);
+    const metered = meter(stream, chosen.choice.model.id, signal, tools.files);
     stream = metered.body;
     if (counting) deps.waitUntil?.(metered.cost.then((micros) => deps.registry.addSpend(micros)));
     if (tools.files) {
@@ -359,16 +386,67 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
         made.container || made.files.length ? deps.registry.rememberOutputs(person.id, made.container, made.files) : undefined));
     }
   }
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-      "X-Fielua-Model": chosen.choice.model.id,
-      "X-Fielua-Effort": chosen.choice.effort,
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Fielua-Model": chosen.choice.model.id,
+    "X-Fielua-Effort": chosen.choice.effort,
+  };
+  if (keeper) {
+    if (!stream) keeper.end(person.id);
+    else {
+      stream = keeper.hold(stream, headers);
+      headers["X-Fielua-Reply"] = keeper.id;
+    }
+  }
+  return new Response(stream, { status: 200, headers });
+}
+
+// MARK: Replies a dropped connection doesn't end
+
+/**
+ * POST /v1/replies: checked here, so no reply's object starts for a
+ * stranger, then sent on to a new one (ReplyHub.start), where this same
+ * route answers it as /v1/messages does, with the reply kept.
+ */
+async function startReply(request: Request, ctx: Context): Promise<Response> {
+  if (ctx.deps.keeper) return await messages(request, ctx);
+  const hub = ctx.deps.replies;
+  if (!hub) return json(404, { error: "not_found" });
+  const person = await caller(request, ctx);
+  if (person instanceof Response) return person;
+  return await hub.start(request);
+}
+
+/** GET (again) or DELETE (stopped and forgotten) a reply of /v1/replies: only its own person's; anything else is "not found". */
+async function keptReply(request: Request, ctx: Context, id: string): Promise<Response> {
+  const hub = ctx.deps.replies;
+  if (!hub || ctx.deps.keeper) return json(404, { error: "not_found" });
+  const person = await caller(request, ctx);
+  if (person instanceof Response) return person;
+  if (!REPLY_ID.test(id)) return json(404, { error: "not_found" });
+  return request.method === "DELETE" ? await hub.end(id, person.id) : await hub.again(id, person.id);
+}
+
+/**
+ * The request a reply's own object got (from ReplyHub.start): only POST
+ * /v1/replies, answered with the object's keeper. The page's origin is the
+ * request's own, so a web session counts as it does at the edge; the edge
+ * adds the cross-origin headers.
+ */
+export async function replyInObject(request: Request, env: RelayEnv, deps: Deps): Promise<Response> {
+  const web = webConfig(env);
+  const requestOrigin = request.headers.get("Origin");
+  const origin = requestOrigin && web?.origins.includes(requestOrigin) ? requestOrigin : null;
+  if (request.method !== "POST" || new URL(request.url).pathname !== "/v1/replies" || !deps.keeper) return json(404, { error: "not_found" });
+  try {
+    return await messages(request, { env, deps, web, origin });
+  } catch (error) {
+    deps.keeper.abandon();
+    console.error("relay error", error instanceof Error ? error.name : "unknown");
+    return json(500, { error: "server_error" });
+  }
 }
 
 /**

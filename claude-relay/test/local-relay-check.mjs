@@ -1,8 +1,9 @@
 // The relay in Cloudflare's own runtime (workerd, through `wrangler dev`),
 // against a stand-in for Anthropic on this machine: the registry's
 // Durable Object, a streamed reply arriving piece by piece, the app
-// stopping a reply (the stand-in must see its connection close), and the
-// relay stopping itself when the credit runs out.
+// stopping a reply (the stand-in must see its connection close), a kept
+// reply going on when its connection drops and read again from its first
+// byte, and the relay stopping itself when the credit runs out.
 //
 //   npm run test:local
 //
@@ -23,7 +24,7 @@ function check(name, ok, detail = "") {
 
 // MARK: The stand-in for Anthropic
 
-const upstream = { requests: [], closedEarly: 0, finished: 0, files: [] };
+const upstream = { requests: [], closedEarly: 0, finished: 0, files: [], ended: [], cut: [] };
 // Anthropic's Models API, as the relay asks it which models and levels it offers now.
 const MODEL_IDS = ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"];
 function modelsList(res) {
@@ -91,7 +92,8 @@ const anthropic = createServer((req, res) => {
     }
     send("message_start", { type: "message_start", message: { id: "msg_local", model: body.model, content: [], usage: { input_tokens: 1000, output_tokens: 1 } } });
     send("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-    const pieces = question === "slow" ? 100 : 5;
+    const slowly = String(question).startsWith("slow");
+    const pieces = slowly ? 100 : 5;
     let sent = 0;
     let done = false;
     const timer = setInterval(() => {
@@ -106,11 +108,12 @@ const anthropic = createServer((req, res) => {
       send("message_stop", { type: "message_stop" });
       done = true;
       upstream.finished++;
+      upstream.ended.push(question);
       res.end();
-    }, question === "slow" ? 150 : 20);
+    }, slowly ? 150 : 20);
     res.on("close", () => {
       clearInterval(timer);
-      if (!done) upstream.closedEarly++;
+      if (!done) { upstream.closedEarly++; upstream.cut.push(question); }
     });
   });
 });
@@ -314,6 +317,61 @@ try {
   check("friends on: the friend can use Claude", (await api("POST", "/v1/messages", { token: friend, body: ask("こんにちは") })).status === 200);
   const filesBefore = upstream.files.length;
   check("a friend can't download the developer's file", (await api("GET", "/v1/files/file_local1/content", { token: friend })).status === 404 && upstream.files.length === filesBefore);
+
+  // A reply a dropped connection doesn't end (Fielua for the web, Safari in the background)
+  check("the relay says replies can be read again", (await (await api("GET", "/v1/status", { token })).json()).resumable === true);
+  const count = (list, question) => list.filter((q) => q === question).length;
+  const dropping = new AbortController();
+  const kept = await api("POST", "/v1/replies", { token, body: ask("slow-kept"), signal: dropping.signal });
+  const replyID = kept.headers.get("x-fielua-reply") ?? "";
+  check("a kept reply streams, with its id", kept.status === 200 && /^[0-9a-f]{64}$/.test(replyID), `${kept.status} ${replyID}`);
+  const keptReader = kept.body.getReader();
+  let firstBytes = new Uint8Array(0);
+  while (firstBytes.length < 400) {
+    const next = await keptReader.read();
+    if (next.done) break;
+    firstBytes = new Uint8Array([...firstBytes, ...next.value]);
+  }
+  dropping.abort();
+  await sleep(1200);
+  check("the connection dropped: Anthropic goes on writing", !count(upstream.cut, "slow-kept") && !count(upstream.ended, "slow-kept"),
+    JSON.stringify({ cut: count(upstream.cut, "slow-kept"), ended: count(upstream.ended, "slow-kept") }));
+  check("someone else can't read it", (await api("GET", `/v1/replies/${replyID}`, { token: friend })).status === 404);
+  check("nor anyone without a key", (await api("GET", `/v1/replies/${replyID}`)).status === 401);
+  check("a made-up id is not found", (await api("GET", `/v1/replies/${"0".repeat(64)}`, { token })).status === 404 &&
+    (await api("GET", "/v1/replies/nonsense", { token })).status === 404);
+  const again = await api("GET", `/v1/replies/${replyID}`, { token });
+  const againReader = again.body.getReader();
+  const againFirst = await againReader.read();
+  check("read again, it arrives at once, before the reply ends", again.status === 200 && !againFirst.done && !count(upstream.ended, "slow-kept") &&
+    again.headers.get("x-fielua-reply") === replyID);
+  let againBytes = againFirst.value ?? new Uint8Array(0);
+  for (;;) {
+    const next = await againReader.read();
+    if (next.done) break;
+    againBytes = new Uint8Array([...againBytes, ...next.value]);
+  }
+  const againText = new TextDecoder().decode(againBytes);
+  check("from the first byte, the same bytes as were sent", firstBytes.length > 0 && firstBytes.every((byte, i) => againBytes[i] === byte));
+  check("and on to the end, written once at Anthropic", againText.includes("片99") && againText.includes("message_stop") &&
+    count(upstream.ended, "slow-kept") === 1 && !count(upstream.cut, "slow-kept") && count(upstream.requests.map((r) => r.body.messages.at(-1).content), "slow-kept") === 1);
+  const afterEnd = await api("GET", `/v1/replies/${replyID}`, { token });
+  check("after the end, the whole reply once more", afterEnd.status === 200 && (await afterEnd.text()) === againText);
+  check("the page says it has it: forgotten", (await api("DELETE", `/v1/replies/${replyID}`, { token })).status === 200 &&
+    (await api("GET", `/v1/replies/${replyID}`, { token })).status === 404 && (await api("DELETE", `/v1/replies/${replyID}`, { token })).status === 404);
+  const stopping = await api("POST", "/v1/replies", { token, body: ask("slow-stop") });
+  const stopID = stopping.headers.get("x-fielua-reply") ?? "";
+  await stopping.body.getReader().read();
+  check("someone else can't stop it", (await api("DELETE", `/v1/replies/${stopID}`, { token: friend })).status === 404);
+  const stopped = await api("DELETE", `/v1/replies/${stopID}`, { token });
+  let stoppedAtAnthropic = false;
+  for (let i = 0; i < 40 && !stoppedAtAnthropic; i++) {
+    await sleep(250);
+    stoppedAtAnthropic = count(upstream.cut, "slow-stop") === 1;
+  }
+  check("停止 (DELETE) stops it at Anthropic", stopped.status === 200 && stoppedAtAnthropic);
+  check("and it is gone", (await api("GET", `/v1/replies/${stopID}`, { token })).status === 404);
+
   const state1 = await (await api("GET", "/admin/state", { token: ADMIN })).json();
   const friendID = state1.users.find((u) => u.role === "friend").id;
   await api("POST", `/admin/users/${friendID}/revoke`, { token: ADMIN });

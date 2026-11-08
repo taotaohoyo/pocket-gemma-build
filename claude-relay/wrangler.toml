@@ -18,9 +18,22 @@ preview_urls = false
 name = "REGISTRY"
 class_name = "Registry"
 
+# Each reply of /v1/replies (Fielua for the web) in an object of its own,
+# which goes on when Safari drops the page's connection in the background,
+# and keeps the reply in memory only (never in its storage) until the page
+# has it, 10 minutes after it ended at the latest (src/reply.ts). SQLite-
+# backed because that is what the free plan offers; nothing is stored.
+[[durable_objects.bindings]]
+name = "REPLY"
+class_name = "Reply"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Registry"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Reply"]
 
 # Not secret. Changed here and deployed again.
 # CLAUDE_MODEL: the model a chat gets when the app names none (the app

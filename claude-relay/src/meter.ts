@@ -61,7 +61,7 @@ const decoder = new TextDecoder();
  * stopped it (`signal`). In Cloudflare's runtime the copy is gathered
  * natively (IdentityTransformStream); elsewhere (the tests) in JavaScript.
  */
-async function gather(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<Uint8Array> {
+export async function gather(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<Uint8Array> {
   const Identity = (globalThis as { IdentityTransformStream?: typeof IdentityTransformStream }).IdentityTransformStream;
   if (Identity) {
     const pass = new Identity();

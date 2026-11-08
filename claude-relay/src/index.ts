@@ -12,10 +12,12 @@ import {
   type Settings, type User, type UserStatus, type WebSession,
 } from "./core";
 import type { StoredKey } from "./webauthn";
-import { handle, type RegistryAPI, type RelayEnv } from "./relay";
+import { handle, json, replyInObject, type RegistryAPI, type RelayEnv, type ReplyHub } from "./relay";
+import { ReplyKeeper } from "./reply";
 
 export interface Env extends RelayEnv {
   REGISTRY: DurableObjectNamespace<Registry>;
+  REPLY: DurableObjectNamespace<Reply>;
 }
 
 /** The single registry: one Durable Object, so every change is seen by the next request. */
@@ -68,9 +70,64 @@ export class Registry extends DurableObject<Env> implements RegistryAPI {
   async historyKey(userID: string, candidate: string): Promise<string | null> { return this.core.historyKey(userID, candidate); }
 }
 
+/**
+ * One reply of /v1/replies (reply.ts): a Durable Object of its own, which
+ * goes on asking Anthropic when the page's connection drops (an outbound
+ * request keeps it running) and keeps the reply in memory only, never in
+ * its storage, until the page has it or it lapses.
+ */
+export class Reply extends DurableObject<Env> {
+  private readonly keeper: ReplyKeeper;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.keeper = new ReplyKeeper(ctx.id.toString());
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    return replyInObject(request, this.env, { registry: registry(this.env), keeper: this.keeper, waitUntil: (promise) => this.ctx.waitUntil(promise) });
+  }
+
+  async again(owner: string): Promise<Response> {
+    const kept = this.keeper.again(owner);
+    if (!kept) return json(404, { error: "not_found" });
+    return new Response(kept.body, { status: 200, headers: kept.headers });
+  }
+
+  async end(owner: string): Promise<boolean> {
+    return this.keeper.end(owner);
+  }
+}
+
+function registry(env: Env): DurableObjectStub<Registry> {
+  return env.REGISTRY.get(env.REGISTRY.idFromName("registry"));
+}
+
+/** The replies' objects as the edge reaches them: a new one for each reply, found again by its id. */
+function replies(env: Env): ReplyHub {
+  const object = (id: string) => {
+    try {
+      return env.REPLY.get(env.REPLY.idFromString(id));
+    } catch {
+      return null;
+    }
+  };
+  return {
+    async start(request) {
+      return env.REPLY.get(env.REPLY.newUniqueId()).fetch(request);
+    },
+    async again(id, owner) {
+      return (await object(id)?.again(owner)) ?? json(404, { error: "not_found" });
+    },
+    async end(id, owner) {
+      const ended = (await object(id)?.end(owner)) ?? false;
+      return ended ? json(200, { ended: true }) : json(404, { error: "not_found" });
+    },
+  };
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
-    const registry = env.REGISTRY.get(env.REGISTRY.idFromName("registry"));
-    return handle(request, env, { registry, waitUntil: (promise) => ctx.waitUntil(promise) });
+    return handle(request, env, { registry: registry(env), replies: replies(env), waitUntil: (promise) => ctx.waitUntil(promise) });
   },
 } satisfies ExportedHandler<Env>;
