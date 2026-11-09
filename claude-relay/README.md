@@ -19,8 +19,6 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
 | 考えている間 | 考えの要約が流れてきます（`thinking.display: "summarized"`）。料金は隠したときと同じです |
 | 断られたとき | サーバー側のフォールバック（`fallbacks: "default"`）。Haiku 5.5 にはありません |
 
-「Fielua の最上級」は Claude Opus 5.5・超高のことで、Fielua の中での位置づけです（Anthropic の分類ではありません）。
-
 ## 公開する手順
 
 1. Cloudflare のダッシュボードで Workers & Pages › 作成 › リポジトリをインポートし、このリポジトリを選びます。

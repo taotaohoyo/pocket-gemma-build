@@ -146,10 +146,7 @@ svg { display: block; }
 .wordmark { font: 400 38px/1.1 var(--serif); color: var(--wordmark); margin: 0 0 32px; letter-spacing: 0.01em; }
 .login-panel { text-align: left; display: grid; gap: 14px; }
 .login-panel h2 { font-size: 20px; margin: 0; }
-.login-note { margin: 0; font-size: 14px; line-height: 1.5; color: var(--secondary); }
-.login-note code { font: 13px var(--mono); background: var(--inline-code); padding: 1px 5px; border-radius: 5px; }
 .login-links { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-.login-foot { margin: 40px 0 0; font-size: 12px; line-height: 1.6; color: var(--secondary); }
 .field { display: grid; gap: 6px; font-size: 13px; color: var(--secondary); }
 .field input {
   min-height: 48px; padding: 0 14px; border-radius: 14px;
@@ -160,7 +157,6 @@ svg { display: block; }
 .make-key { background: var(--card); border: 1px solid var(--card-stroke); border-radius: 14px; padding: 12px 14px; }
 .make-key summary { cursor: pointer; font-size: 15px; color: var(--tint); }
 .make-key[open] summary { margin-bottom: 10px; }
-.make-key .secondary { margin-top: 10px; }
 .made-key { display: block; margin-top: 10px; font: 13px/1.4 var(--mono); word-break: break-all; padding: 10px; border-radius: 10px; background: var(--code-bg); user-select: all; -webkit-user-select: all; }
 .error-text { color: var(--caution); font-size: 14px; margin: 16px 0 0; text-align: left; }
 
@@ -410,7 +406,6 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 .choice .title { font-size: 16px; font-weight: 500; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .choice .sub { font-size: 13px; color: var(--secondary); line-height: 1.4; }
 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--secondary); }
-.tag.top { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--ink); }
 .check { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--input-border); display: grid; place-items: center; }
 .choice[aria-checked="true"] .check { border: 0; background: var(--accent); }
 .choice[aria-checked="true"] .check::after { content: ""; width: 10px; height: 6px; border-left: 2.2px solid var(--on-accent); border-bottom: 2.2px solid var(--on-accent); transform: translateY(-1px) rotate(-45deg); }
@@ -428,6 +423,7 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 .switch:checked { background: var(--active); }
 .switch:checked::after { transform: translateX(20px); }
 .inline-field { display: flex; gap: 8px; margin-top: 10px; }
+.inline-field:first-child { margin-top: 0; }
 .inline-field input { flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--input-border); background: var(--paper); font-size: 16px; color: var(--ink); outline: none; }
 .inline-field input:focus { border-color: var(--active); }
 .link-out { margin-top: 10px; font: 13px/1.4 var(--mono); word-break: break-all; padding: 10px; border-radius: 10px; background: var(--code-bg); user-select: all; -webkit-user-select: all; }

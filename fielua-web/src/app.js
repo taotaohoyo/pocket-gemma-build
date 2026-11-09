@@ -15,13 +15,13 @@ const $ = (id) => document.getElementById(id);
 
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 const EFFORT = {
-  low: { title: "低", help: "速く答えます。短い質問や確認に。" },
-  medium: { title: "中", help: "速さと深さのバランスをとります。" },
-  high: { title: "高", help: "難しい質問をじっくり考えます。" },
-  xhigh: { title: "超高", help: "さらに深く考えます。時間と料金がいちばん増えます。" },
+  low: { title: "低" },
+  medium: { title: "中" },
+  high: { title: "高" },
+  xhigh: { title: "超高" },
 };
-/** Fielua's top choice: Claude Opus 5.5 at 超高. */
-const TOP = { model: "claude-opus-5-5", effort: "xhigh" };
+/** The model a new person starts with. (No Fielua rank on Anthropic's models: Hachimoto さん, 2026-11-09.) */
+const DEFAULT_MODEL = "claude-opus-5-5";
 /** The level every model starts at until the person chooses one (Hachimoto さん, 2026-11-08). */
 const START_EFFORT = "medium";
 const startEffort = (model) => (model.efforts.includes(START_EFFORT) ? START_EFFORT : model.defaultEffort);
@@ -67,7 +67,7 @@ function loadPrefs() {
   try {
     const value = JSON.parse(localStorage.getItem("fielua.prefs") ?? "{}");
     return {
-      model: typeof value.model === "string" ? value.model : TOP.model,
+      model: typeof value.model === "string" ? value.model : DEFAULT_MODEL,
       efforts: typeof value.efforts === "object" && value.efforts ? value.efforts : {},
       // The plus menu's switches: off until turned on, then kept on this device.
       tools: { webSearch: value.tools?.webSearch === true, files: value.tools?.files === true },
@@ -75,7 +75,7 @@ function loadPrefs() {
       historyDocked: value.historyDocked !== false,
     };
   } catch {
-    return { model: TOP.model, efforts: {}, tools: { webSearch: false, files: false }, historyDocked: true };
+    return { model: DEFAULT_MODEL, efforts: {}, tools: { webSearch: false, files: false }, historyDocked: true };
   }
 }
 function savePrefs() {
@@ -323,8 +323,8 @@ function formatUSD(value) {
 
 const REASONS = {
   not_configured: "中継サーバーに Anthropic の API キーが設定されていません。",
-  paused_billing: "Anthropic の API クレジットがなくなったため、Claude を止めています。追加購入はしていません。開発者が再開するまでお待ちください。",
-  paused_limit: "Anthropic の利用上限に達したため、Claude を止めています。開発者が再開するまでお待ちください。",
+  paused_billing: "Anthropic のクレジットが切れたため停止中です。追加購入はしていません。",
+  paused_limit: "Anthropic の利用上限に達したため停止中です。",
   friends_disabled: "開発者が友人の利用をまだオンにしていません。",
 };
 
@@ -337,7 +337,7 @@ function errorText(status, code, body = {}) {
     case "forbidden_origin": return "このアドレスからは使えません。";
     case "rate_limited": return "Claude への問い合わせが多すぎます。少し待ってからお試しください。";
     case "overloaded": return "Claude が混み合っています。少し待ってからお試しください。";
-    case "server_key": return "中継サーバーの API キーが Anthropic に受け付けられませんでした。開発者がキーを確かめる必要があります。";
+    case "server_key": return "中継サーバーの API キーが Anthropic に受け付けられませんでした。";
     case "model_unavailable": return "このモデルは今 Anthropic で使えません。モデルを選び直してください。";
     case "unsupported_model":
     case "unsupported_effort": return "このモデルか推論レベルは、中継サーバーで使えません。モデルの設定で選び直してください。";
@@ -359,7 +359,7 @@ function loginErrorText(error) {
   if (!(error instanceof RelayError)) return "パスキーを使えませんでした。もう一度お試しください。";
   switch (error.code) {
     case "network": return "中継サーバーに接続できません。インターネット接続を確かめてください。";
-    case "invalid_code": return "招待コードが無効です。使用済みか、72 時間を過ぎています。新しい招待をもらってください。";
+    case "invalid_code": return "招待コードが無効です。使用済みか、72 時間を過ぎています。";
     case "too_many_attempts": return "試した回数が多すぎます。1 時間ほど待ってからお試しください。";
     case "unknown_passkey": return "このパスキーの登録は削除されています。招待コードでもう一度登録してください。";
     case "revoked": return "開発者がこのアカウントの利用を止めています。";
@@ -368,7 +368,7 @@ function loginErrorText(error) {
     case "busy": return "混み合っています。少し待ってからお試しください。";
     case "web_not_configured": return "中継サーバーで Web 版がまだ有効になっていません（WEB_ORIGINS と WEB_RP_ID）。";
     case "forbidden_origin": return "このアドレスからは使えません。https://suelira.com/chat/ を開いてください。";
-    case "unauthorized": return "管理キーが違います。Cloudflare の ADMIN_TOKEN と同じものを入れてください。";
+    case "unauthorized": return "管理キーが違います。";
     case "admin_not_configured": return "中継サーバーに管理キー（ADMIN_TOKEN、32 文字以上）が設定されていません。";
     default: return `中継サーバーから予期しない応答がありました（${error.status}）。`;
   }
@@ -384,7 +384,7 @@ function showLogin(panel = "main", message = "") {
   error.textContent = message;
   error.hidden = !message;
   if (!passkeysSupported()) {
-    error.textContent = "このブラウザはパスキーに対応していません。iPhone の Safari か、新しい Chrome・Edge・Safari でお試しください。";
+    error.textContent = "このブラウザはパスキーに対応していません。";
     error.hidden = false;
   }
 }
@@ -439,7 +439,7 @@ function wireLogin() {
       session.set(await registerWithCode(code));
       $("invite-code").value = "";
       await enterChat(true);
-      toast("登録しました。次からはパスキーでログインできます。");
+      toast("登録しました。");
     } catch (error) {
       showLogin("invite", loginErrorText(error));
     } finally {
@@ -470,7 +470,7 @@ function wireLogin() {
       $("made-admin-key").hidden = true;
       $("made-admin-key").textContent = "";
       await enterChat(true);
-      toast("開発者として登録しました。次からはパスキーでログインできます。");
+      toast("開発者として登録しました。");
     } catch (error) {
       showLogin("setup", loginErrorText(error));
     } finally {
@@ -593,8 +593,7 @@ function updateBanner() {
   if (!navigator.onLine) { showBanner("インターネットに接続されていません。", true); return; }
   const status = state.status;
   if (status && !status.available) {
-    const extra = status.role === "developer" && (status.reason === "paused_billing" || status.reason === "paused_limit") ? " 設定から再開できます。" : "";
-    showBanner((REASONS[status.reason] ?? REASONS.not_configured) + extra, true);
+    showBanner(REASONS[status.reason] ?? REASONS.not_configured, true);
     return;
   }
   showBanner("");
@@ -924,7 +923,7 @@ function renderTools() {
   const pills = $("tool-pills");
   pills.replaceChildren(...Object.entries(TOOL_LABELS).filter(([key]) => offered && state.prefs.tools[key]).map(([key, label]) =>
     h("button", {
-      type: "button", class: "tool-pill", "aria-label": `${label.name}、オン。押すとオフにします`, disabled: !!state.streaming,
+      type: "button", class: "tool-pill", "aria-label": `${label.name}をオフにする`, disabled: !!state.streaming,
       onclick: () => setTool(key, false),
     }, icon(label.icon), h("span", { text: label.short }))));
   for (const row of document.querySelectorAll("#attach-menu [data-tool]")) {
@@ -1008,7 +1007,7 @@ function filesElement(message) {
     const expired = fileExpired(file);
     const button = expired ? null : h("button", { type: "button", class: "secondary download", "aria-label": `保存: ${file.name ?? "ファイル"}` }, icon("down"), h("span", { text: "保存" }));
     button?.addEventListener("click", () => downloadFile(file, button));
-    const meta = expired ? "作成から 30 日を過ぎたため、保存できません"
+    const meta = expired ? "作成から 30 日を過ぎたため保存できません"
       : file.name ? `${fileKind(file)}${file.size ? ` · ${sizeLabel(file.size)}` : ""}` : "読み込んでいます…";
     const card = h("div", { class: "made-file" },
       icon("doc"),
@@ -1051,7 +1050,7 @@ async function downloadFile(file, button) {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   } catch (error) {
-    toast(error?.code === "not_found" ? "このファイルは保存できませんでした。もう一度作るよう頼んでください。" : errorText(error?.status ?? 0, error?.code ?? "network"));
+    toast(error?.code === "not_found" ? "このファイルは保存できませんでした。" : errorText(error?.status ?? 0, error?.code ?? "network"));
   } finally {
     button.disabled = false;
     button.classList.remove("busy");
@@ -1106,7 +1105,7 @@ function captionFor(message) {
 const END_NOTICES = {
   refused: "Claude はこの質問への回答を控えました。",
   cutOff: "返信が長さの上限に達したため、ここで終わっています。",
-  paused: "調べることが多く、ここで一度止まりました。「続けて」と送ると続きを書きます。",
+  paused: "ここで一度止まりました。「続けて」と送ると続きを書きます。",
 };
 
 /** The lines under a finished reply: which model answered, and what stopped it. */
@@ -1666,17 +1665,17 @@ async function follow(run, response, unanswered = null) {
       else if (event.type === "cutOff") message.end = "cutOff";
       else if (event.type === "failed") {
         run.fail(event.error === "overloaded_error"
-          ? "Claude が混み合っているため、返信が途中で止まりました。ここまでの返信は残しています。"
-          : "Claude との接続が切れました。ここまでの返信は残しています。");
+          ? "Claude が混み合っているため、途中で止まりました。"
+          : "Claude との接続が切れました。");
       } else if (event.type === "done") { sawDone = true; break; }
     }
-    if (!sawDone && !message.error && message.end === "streaming") run.fail("Claude との接続が切れました。ここまでの返信は残しています。");
+    if (!sawDone && !message.error && message.end === "streaming") run.fail("Claude との接続が切れました。");
   } catch (error) {
     if (error?.name === "AbortError" || controller.signal.aborted) {
       message.end = "stopped";
     } else if (!message.error) {
       // Never reached the relay (or it never began): as a question that couldn't be sent.
-      run.fail(unanswered && !heard ? errorText(0, "network") : "Claude との接続が切れました。ここまでの返信は残しています。");
+      run.fail(unanswered && !heard ? errorText(0, "network") : "Claude との接続が切れました。");
     }
   }
   run.unwatch?.();
@@ -1745,10 +1744,8 @@ function renderModelSheet() {
   list.replaceChildren(...catalog().map((model) => {
     const level = model.id === current.id ? currentEffort
       : (model.efforts.includes(state.prefs.efforts[model.id]) ? state.prefs.efforts[model.id] : startEffort(model));
-    const top = model.id === TOP.model && level === TOP.effort;
     const sub = model.available === false ? "今は Anthropic で使えません"
-      : model.available === null ? `推論レベル ${EFFORT[level]?.title ?? level}${top ? " · Fieluaの最上級" : ""} · 使えるか確かめられていません`
-        : `推論レベル ${EFFORT[level]?.title ?? level}${top ? " · Fieluaの最上級" : ""}`;
+      : `推論レベル ${EFFORT[level]?.title ?? level}${model.available === null ? " · 使えるか未確認" : ""}`;
     return h("button", {
       type: "button", class: "choice", role: "radio", "aria-checked": model.id === current.id ? "true" : "false",
       disabled: !usable(model),
@@ -1759,13 +1756,12 @@ function renderModelSheet() {
   efforts.replaceChildren(...EFFORTS.map((level) => {
     const offered = current.efforts.includes(level);
     const title = h("span", { class: "title" }, EFFORT[level].title,
-      startEffort(current) === level ? h("span", { class: "tag", text: "標準" }) : null,
-      current.id === TOP.model && level === TOP.effort ? h("span", { class: "tag top", text: "Fieluaの最上級" }) : null);
+      startEffort(current) === level ? h("span", { class: "tag", text: "標準" }) : null);
     return h("button", {
       type: "button", class: "choice", role: "radio", "aria-checked": level === currentEffort ? "true" : "false",
       disabled: !offered,
       onclick: () => { state.prefs.efforts[current.id] = level; savePrefs(); renderModelSheet(); renderTopbar(); },
-    }, h("span", { class: "body" }, title, h("span", { class: "sub", text: offered ? EFFORT[level].help : "このモデルでは使えません" })), h("span", { class: "check", "aria-hidden": "true" }));
+    }, h("span", { class: "body" }, title, offered ? null : h("span", { class: "sub", text: "このモデルでは使えません" })), h("span", { class: "check", "aria-hidden": "true" }));
   }));
 }
 
@@ -1820,9 +1816,8 @@ function renderCreditSheet() {
   if (credit) {
     items.push(ring(credit.percent, h("div", { class: "muted", text: `残り 約 ${formatUSD(credit.remainingUSD)}（推定）` })));
     items.push(h("div", { class: "card" },
-      h("p", { text: `${formatTime(credit.setAt)} に入力した残高 ${formatUSD(credit.budgetUSD)} から、それ以降に Fielua（このサイトと iPhone）の返信で使った分 ${formatUSD(credit.spentUSD)} を引いた推定です。` }),
-      h("p", { class: "muted", text: "使った分は、返信ごとのトークン数と Anthropic の公開料金（ウェブ検索は 1 回 $0.01）から計算しています。同じ Anthropic アカウントのほかの利用や、途中で止めた返信の細かい分は入らないため、Console の表示と少しずれることがあります。" }),
-      state.status?.reason === "paused_billing" ? h("p", { text: "Anthropic がクレジット切れと答えたため、0% にしています。" }) : null));
+      h("p", { text: `${formatTime(credit.setAt)} の残高 ${formatUSD(credit.budgetUSD)} · それ以降に使った分 約 ${formatUSD(credit.spentUSD)}` }),
+      state.status?.reason === "paused_billing" ? h("p", { text: "Anthropic でクレジットが切れています。" }) : null));
   } else {
     items.push(h("div", { class: "card" }, h("p", { text: "残りのクレジットはまだ入力されていません。" })));
   }
@@ -1847,7 +1842,7 @@ function creditControls(credit) {
     if (!done) friends.checked = !friends.checked;
   });
   return h("div", { class: "card" },
-    h("p", { text: "Anthropic の Console（Billing）に出ている残高を入れると、そこから推定します。クレジットを足したときも、新しい残高を入れ直してください。" }),
+    h("p", { text: "Console（Billing）の残高（米ドル）" }),
     h("div", { class: "inline-field" }, amount, save),
     credit ? h("div", { class: "row-actions" }, h("button", {
       type: "button", class: "text danger", text: "推定をやめる",
@@ -1867,7 +1862,7 @@ async function adminCall(path, options = {}) {
       return await callJSON(path, options);
     } catch (error) {
       if (error instanceof RelayError && error.code === "reauth_required" && attempt === 0) {
-        const ok = await confirmDialog({ title: "パスキーで確認", body: ["管理の操作の前に、もう一度パスキーで確認します。"], ok: "確認する" });
+        const ok = await confirmDialog({ title: "もう一度パスキーで確認", ok: "確認する" });
         if (!ok) return null;
         try {
           const old = session.get()?.token;
@@ -1892,7 +1887,7 @@ function adminErrorText(error) {
     case "forbidden": return "開発者だけができる操作です。";
     case "reauth_required": return "もう一度パスキーで確認してください。";
     case "admin_not_configured": return "中継サーバーに管理キー（ADMIN_TOKEN）が設定されていません。";
-    case "not_found": return "見つかりませんでした。ほかの画面で変わったかもしれません。";
+    case "not_found": return "見つかりませんでした。";
     default: return errorText(error.status, error.code, error.body);
   }
 }
@@ -1905,16 +1900,14 @@ async function renderSettings() {
   items.push(h("p", { class: "section-label", text: "アカウント" }));
   items.push(h("div", { class: "card" },
     h("p", {}, h("strong", { text: status?.name ?? me?.name ?? "" }), `（${(status?.role ?? me?.role) === "developer" ? "開発者" : "友人"}）`),
-    status?.web?.expiresAt ? h("p", { class: "muted", text: `このログインは ${formatTime(status.web.expiresAt)} まで使えます。` }) : null,
+    status?.web?.expiresAt ? h("p", { class: "muted", text: `${formatTime(status.web.expiresAt)} までログイン中` }) : null,
     h("div", { class: "row-actions" },
       h("button", { type: "button", class: "secondary", text: "ログアウト", onclick: logout }),
       h("button", { type: "button", class: "secondary danger", text: "登録を解除", onclick: leave }))));
   items.push(h("p", { class: "section-label", text: "送られる内容" }));
   items.push(h("div", { class: "card" },
-    h("p", { text: "書いたメッセージと添付、この会話のこれまでのやり取りが、Fielua の中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
-    h("p", { class: "muted", text: "写真は小さくし、位置情報などを消してから送ります。動画は音声を送らず、いくつかの場面の静止画にします。PDF とテキストはそのまま送ります。" }),
-    h("p", { class: "muted", text: "＋ で「ウェブ検索」をオンにすると、Claude が決めた検索語でウェブを調べます（1 回 $0.01）。「ファイル作成」をオンにすると、Anthropic のサーバーの中でコードを動かしてファイルを作ります。作ったファイルは Anthropic に 30 日ほど残り、作った本人だけが保存できます。" }),
-    h("p", { class: "muted", text: `中継サーバーは会話を保存しません。${archive.isOpen() ? "会話はこの端末の会話履歴にだけ残ります（下の「会話履歴」）。" : "会話はこのタブの中だけにあり、タブを閉じると消えます。"}Anthropic は API の利用データを Anthropic の方針に沿って一定期間保持します。答えには誤りが含まれることがあります。` })));
+    h("p", { text: "メッセージと添付は中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
+    h("p", { class: "muted", text: "中継サーバーは会話を保存しません。Anthropic は API の利用データを一定期間保持します。" })));
   items.push(...await historySection());
   if ((status?.role ?? me?.role) === "developer") items.push(...await developerSection());
   body.replaceChildren(...items);
@@ -1962,9 +1955,9 @@ async function historySection() {
   });
   section.push(h("div", { class: "card" },
     open
-      ? h("p", { text: "会話はこの端末のブラウザの中にだけ、暗号化して残ります。中継サーバーには保存しません。読めるのはログインしている間だけです。" })
-      : h("p", { text: drawer.failed ? "会話履歴を読み込めませんでした。接続を確かめてください。今の会話はこのタブの中だけにあります。" : "この端末では会話履歴を保存できません。今の会話はこのタブの中だけにあり、タブを閉じると消えます。" }),
-    h("p", { class: "muted", text: "Safari では、このページを 7 日ほど使わないと消えることがあります。ホーム画面に追加して開くと消えにくくなります（Safari で残した会話は、ホーム画面のアプリには引き継がれません）。プライベートブラウズでは、タブを閉じると消えます。" }),
+      ? h("p", { text: "会話はこの端末にだけ、暗号化して残ります。" })
+      : h("p", { text: drawer.failed ? "会話履歴を読み込めませんでした。今の会話はタブを閉じると消えます。" : "この端末では会話履歴を保存できません。今の会話はタブを閉じると消えます。" }),
+    open ? h("p", { class: "muted", text: "Safari では 7 日ほど開かないと消えることがあります。" }) : null,
     open ? h("p", { class: "muted", text: `${count}件の会話` }) : null,
     open ? h("div", { class: "row-actions" }, removeAll) : null,
     note));
@@ -1985,7 +1978,6 @@ async function developerSection() {
   const paused = settings.paused;
   section.push(h("div", { class: "card" },
     h("p", { text: !adminState.configured ? REASONS.not_configured : paused ? (paused === "billing" ? "クレジット切れで停止中です。" : "利用上限で停止中です。") : "Claude は使える状態です。" }),
-    paused ? h("p", { class: "muted", text: "Anthropic の Console でクレジットや上限を確かめてから再開してください。このサイトから購入や自動チャージはしません。" }) : null,
     paused ? h("div", { class: "row-actions" }, h("button", {
       type: "button", class: "secondary", text: "再開する",
       onclick: async () => { if (await adminCall("/admin/settings", { method: "POST", body: { resume: true } })) { await refreshStatus(); renderSettings(); } },
@@ -2000,7 +1992,7 @@ async function developerSection() {
     if (friendsSwitch.checked) {
       const ok = await confirmDialog({
         title: "友人の利用をオンにする",
-        body: ["友人の質問にも、開発者の Anthropic API キーとクレジットが使われます。", "オンにする前に、Anthropic の商用利用規約と利用ポリシー（AI であることの明示、18 歳未満への提供など）を確かめてください。"],
+        body: ["オンにする前に、Anthropic の商用利用規約と利用ポリシー（AI であることの明示、18 歳未満への提供など）を確かめてください。"],
         ok: "オンにする",
         check: "Anthropic の規約と利用ポリシーを確かめました",
       });
@@ -2011,14 +2003,12 @@ async function developerSection() {
     await refreshStatus();
   });
   section.push(h("div", { class: "card" },
-    h("div", { class: "switch-row" }, h("span", { text: "友人の利用" }), friendsSwitch),
-    h("p", { class: "muted", text: "Anthropic の規約を確かめるまでオフのままにしてください。オフの間、友人はログインできても Claude には送れません。" })));
+    h("div", { class: "switch-row" }, h("span", { text: "友人の利用" }), friendsSwitch)));
   // Invites.
   const name = h("input", { type: "text", maxlength: "40", placeholder: "招待する人の名前", "aria-label": "招待する人の名前" });
   const role = h("select", { "aria-label": "役割", class: "role-select" }, h("option", { value: "friend", text: "友人" }), h("option", { value: "developer", text: "開発者" }));
   const made = h("div");
   section.push(h("div", { class: "card" },
-    h("p", { text: "招待コードは 72 時間・一度だけ使えます。本人だけに直接渡してください。" }),
     h("div", { class: "inline-field" }, name, role, h("button", {
       type: "button", class: "secondary", text: "作る",
       onclick: async () => {
@@ -2056,7 +2046,7 @@ async function developerSection() {
       h("button", {
         type: "button", class: "secondary danger", text: "削除",
         onclick: async () => {
-          const ok = await confirmDialog({ title: `${user.name} を削除`, body: ["この人の登録、パスキー、ログインがすべて消え、もう使えなくなります。使うには新しい招待が必要です。"], ok: "削除", danger: true });
+          const ok = await confirmDialog({ title: `${user.name} を削除`, body: ["登録とパスキーの記録が消えます。また使うには新しい招待が必要です。"], ok: "削除", danger: true });
           if (ok && await adminCall(`/admin/users/${encodeURIComponent(user.id)}`, { method: "DELETE" })) renderSettings();
         },
       })))))));
@@ -2078,7 +2068,7 @@ async function logout() {
 async function leave() {
   const ok = await confirmDialog({
     title: "登録を解除",
-    body: ["あなたの登録とパスキーの記録が中継サーバーから消え、このアカウントは使えなくなります。もう一度使うには新しい招待が必要です。この端末の会話履歴も消えます。", "端末に残ったパスキーは、端末の設定（パスワード）から削除できます。"],
+    body: ["登録とパスキーの記録が消え、このアカウントは使えなくなります。この端末の会話履歴も消えます。"],
     ok: "登録を解除", danger: true,
   });
   if (!ok) return;
@@ -2551,7 +2541,7 @@ async function drawHistory(ticket) {
     list.replaceChildren();
     delete list.dataset.shape;
     empty.hidden = drawer.available === null && !drawer.failed;
-    empty.textContent = drawer.failed ? "会話履歴を読み込めませんでした。接続を確かめてください。" : "この端末では会話履歴を保存できません";
+    empty.textContent = drawer.failed ? "会話履歴を読み込めませんでした。" : "この端末では会話履歴を保存できません";
     return true;
   }
   let items = await archive.list().catch(() => []);

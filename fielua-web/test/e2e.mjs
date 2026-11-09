@@ -521,12 +521,16 @@ try {
   await dev.waitForSelector("#model-sheet[open]");
   const sheet = await dev.evaluate(() => ({
     models: Array.from(document.querySelectorAll("#model-list .choice")).map((b) => ({ name: b.querySelector(".title").textContent, disabled: b.disabled, checked: b.getAttribute("aria-checked") })),
-    efforts: Array.from(document.querySelectorAll("#effort-list .choice")).map((b) => ({ title: b.querySelector(".title").textContent, disabled: b.disabled, checked: b.getAttribute("aria-checked") })),
+    efforts: Array.from(document.querySelectorAll("#effort-list .choice")).map((b) => ({ title: b.querySelector(".title").textContent, sub: b.querySelector(".sub")?.textContent ?? "", disabled: b.disabled, checked: b.getAttribute("aria-checked") })),
+    subs: Array.from(document.querySelectorAll("#model-list .choice .sub")).map((sub) => sub.textContent),
+    text: document.getElementById("model-sheet").textContent,
   }));
   check("models in Fielua's order, Opus 5.5 first", sheet.models.map((m) => m.name).join(",") === "Claude Opus 5.5,Claude Fable 5.1,Claude Sonnet 5.5,Claude Haiku 5.5");
   check("a model Anthropic doesn't offer can't be chosen", sheet.models[3].disabled && !sheet.models[0].disabled);
-  check("中 is chosen and marked 標準; 超高 is marked Fielua's top", sheet.efforts[1].checked === "true" && sheet.efforts[1].title.includes("標準") &&
-    sheet.efforts[3].title.includes("超高") && sheet.efforts[3].title.includes("Fieluaの最上級"), JSON.stringify(sheet.efforts));
+  check("中 is chosen and marked 標準; 超高 is just 超高", sheet.efforts[1].checked === "true" && sheet.efforts[1].title.includes("標準") &&
+    sheet.efforts[3].title === "超高", JSON.stringify(sheet.efforts));
+  check("no Fielua rank on Claude's models, and no explanations: levels are their names alone",
+    !sheet.text.includes("最上級") && !sheet.text.includes("Fielua") && sheet.efforts.every((e) => e.sub === "") && sheet.subs[0] === "推論レベル 中", JSON.stringify({ subs: sheet.subs, efforts: sheet.efforts }));
   check("no max level", sheet.efforts.length === 4 && !sheet.efforts.some((e) => /max|最大/.test(e.title)));
   await sleep(450);
   await dev.screenshot({ path: join(SHOTS, "check-model-sheet.png") });

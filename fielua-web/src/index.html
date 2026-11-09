@@ -29,7 +29,6 @@
     <h1 class="wordmark">Fielua</h1>
     <section id="login-main" class="login-panel">
       <button type="button" id="login-passkey" class="primary">パスキーでログイン</button>
-      <p class="login-note">Face ID や Touch ID など、この端末のパスキーで入ります。</p>
       <div class="login-links">
         <button type="button" class="text" id="show-invite">招待コードで登録</button>
         <button type="button" class="text" id="show-setup">開発者の初期設定</button>
@@ -37,34 +36,29 @@
     </section>
     <section id="login-invite" class="login-panel" hidden>
       <h2>招待コードで登録</h2>
-      <p class="login-note">開発者から届いたコードを入れて、この端末にパスキーを作ります。コードは一度だけ使えます。</p>
       <label class="field"><span>招待コード</span>
-        <input id="invite-code" type="text" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="40">
+        <input id="invite-code" type="text" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40">
       </label>
       <button type="button" id="invite-register" class="primary">パスキーを作って登録</button>
       <button type="button" class="text back">戻る</button>
     </section>
     <section id="login-setup" class="login-panel" hidden>
       <h2>開発者の初期設定</h2>
-      <p class="login-note">iPhone の Fielua がなくても、ここで開発者として登録できます。</p>
       <details class="make-key">
-        <summary>管理キーをまだ作っていないとき</summary>
-        <p class="login-note">下のボタンで作ったキーを、Cloudflare の Worker の「設定 › 変数とシークレット」に、シークレット <code>ADMIN_TOKEN</code> として貼り付けて保存してください。キーはこの画面にだけ出て、どこにも送りません。</p>
+        <summary>管理キーを作る</summary>
         <button type="button" id="make-admin-key" class="secondary">管理キーを作ってコピー</button>
         <output id="made-admin-key" class="made-key" hidden></output>
       </details>
       <label class="field"><span>管理キー（ADMIN_TOKEN）</span>
-        <input id="setup-admin-key" type="password" autocomplete="off" spellcheck="false" placeholder="32 文字以上">
+        <input id="setup-admin-key" type="password" autocomplete="off" spellcheck="false">
       </label>
       <label class="field"><span>名前</span>
-        <input id="setup-name" type="text" autocomplete="off" maxlength="40" placeholder="例：はっちー">
+        <input id="setup-name" type="text" autocomplete="off" maxlength="40">
       </label>
-      <button type="button" id="setup-register" class="primary">パスキーを作って開発者として登録</button>
-      <p class="login-note">管理キーは登録に一度使うだけで、この端末には残しません。</p>
+      <button type="button" id="setup-register" class="primary">パスキーを作って登録</button>
       <button type="button" class="text back">戻る</button>
     </section>
     <p id="login-error" class="error-text" role="alert" hidden></p>
-    <p class="login-foot">Fielua の Web 版は、Anthropic の外部 AI「Claude」と話すための、招待した人だけのチャットです。</p>
   </div>
 </main>
 
@@ -181,7 +175,6 @@
     <div id="model-list" class="choice-list" role="radiogroup" aria-label="モデル"></div>
     <p class="section-label">推論レベル</p>
     <div id="effort-list" class="choice-list" role="radiogroup" aria-label="推論レベル"></div>
-    <p class="section-foot">上げるほどよく考えて答えます。返信が始まるまでの時間と料金も増えます。次の送信から使い、このモデルの次の会話にも使います。使えないモデルとレベルは選べません。</p>
   </div>
 </dialog>
 
