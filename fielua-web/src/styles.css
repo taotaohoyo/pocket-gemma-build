@@ -264,7 +264,7 @@ svg { display: block; }
 .wordmark { font: 400 38px/1.1 var(--serif); color: var(--wordmark); margin: 0 0 32px; letter-spacing: 0.01em; }
 /* The first showing: the flower opens (flower.js) while the name and the form come up under it. */
 .login.opening .wordmark { animation: come-up 0.7s var(--ease-out) 0.25s backwards; }
-.login.opening .login-panel, .login.opening .error-text { animation: come-up 0.6s var(--ease-out) 0.4s backwards; }
+.login.opening .login-panel:not(.switched), .login.opening .error-text { animation: come-up 0.6s var(--ease-out) 0.4s backwards; }
 .login-panel.switched { animation: come-up 0.34s var(--ease-out) backwards; }
 .error-text.switched { animation: fade-in 0.25s var(--ease-out) backwards; }
 @keyframes come-up { from { opacity: 0; transform: translateY(8px); } }
@@ -380,6 +380,8 @@ svg { display: block; }
       vline to 18px,
       curve to 18px 0 with 0 8.06px / 8.06px 0, close);
   }
+  /* (One narrow letter: wide enough for both round ends and the tail.) */
+  .msg.user .bubble { min-width: 44px; }
   .sent-picture, .sent-note { margin-right: 6px; }
 }
 /* A sent message grows into its place from its lower trailing corner (the app's OutgoingArrival on ChatMotion.send). */
@@ -540,7 +542,7 @@ svg { display: block; }
 
 .jump {
   /* The app's control: a 44 glass circle 24 above the field, its arrow in the umber tint. */
-  position: absolute; left: 50%; top: -68px; transform: translateX(-50%);
+  position: absolute; left: calc(50% - 22px); top: -68px;
   width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; padding: 0;
   border: 0.5px solid var(--glass-stroke); color: var(--tint);
   background: var(--glass);
@@ -553,8 +555,8 @@ svg { display: block; }
 .jump svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 /* It rises out of the field (from under it, at 40% of its size) with a little life, its arrow a moment after, and sinks back in with none. */
 .jump svg { animation: fade-in 0.2s var(--ease-out) 0.12s backwards; }
-@keyframes rise { from { opacity: 0; transform: translate(-50%, 57px) scale(0.4); } 20% { opacity: 1; } }
-@keyframes sink { 45% { opacity: 1; } 75% { opacity: 0; } to { opacity: 0; transform: translate(-50%, 57px) scale(0.4); } }
+@keyframes rise { from { opacity: 0; transform: translateY(57px) scale(0.4); } 20% { opacity: 1; } }
+@keyframes sink { 45% { opacity: 1; } 75% { opacity: 0; } to { opacity: 0; transform: translateY(57px) scale(0.4); } }
 
 /* The credit left: a ring that empties as the credit is spent. */
 .credit {
@@ -587,11 +589,17 @@ dialog::backdrop { background: rgba(20, 16, 10, 0.32); }
 /* In the dark a sheet is told from the page behind it by a deeper dim and a hairline of light, not by a shadow. */
 @media (prefers-color-scheme: dark) {
   dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
-  .sheet { border: 0.5px solid rgba(255, 240, 209, 0.12); border-bottom: 0; }
-  .alert { border: 0.5px solid #3A352E; }
+  dialog.sheet { border: 0.5px solid rgba(255, 240, 209, 0.12); border-bottom: 0; }
+  dialog.alert { border: 0.5px solid #3A352E; }
 }
 dialog[open]::backdrop { animation: backdrop-in 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) backwards; }
 dialog.closing::backdrop { animation: backdrop-out 0.28s cubic-bezier(0.4, 0, 0.6, 1) both; }
+/* (The dim leaves in the time its dialog takes: the alert and the PC's cards go faster than a sheet.) */
+.alert.closing::backdrop { animation-duration: 0.18s; }
+.sheet.viewer.closing::backdrop { animation-duration: 0.2s; }
+.sheet.viewer.closing.pulled::backdrop { animation-duration: 0.28s; }
+@media (min-width: 700px) { .sheet.closing::backdrop { animation-duration: 0.2s; } }
+@media (prefers-color-scheme: dark) and (min-width: 700px) { dialog.sheet { border-bottom: 0.5px solid rgba(255, 240, 209, 0.12); } }
 @keyframes backdrop-in { from { opacity: 0; } }
 @keyframes backdrop-out { to { opacity: 0; } }
 dialog.closing { pointer-events: none; }
@@ -602,16 +610,20 @@ dialog.closing { pointer-events: none; }
   overflow: hidden; display: none; flex-direction: column;
 }
 /* A sheet comes up from the bottom edge on iOS's spring and goes back down; on a wide screen it is a card in the middle. */
+/* Asked back while it was closing: no second entrance (motion.js brings it back from where it had got to). */
+dialog.stayed, dialog.stayed::backdrop { animation: none !important; }
 .sheet[open] { display: flex; animation: sheet-up var(--sheet-open-ms) var(--sheet-open) backwards; }
 .sheet.closing { animation: sheet-down 0.3s var(--ease-drawer) both; }
 @keyframes sheet-up { from { transform: translateY(100%); } }
 @keyframes sheet-down { to { transform: translateY(100%); } }
 @media (min-width: 700px) {
   .sheet { margin: auto; border-radius: 24px; max-height: 80vh; }
-  .sheet[open] { animation: card-in var(--menu-close-ms) var(--menu-close) backwards; }
-  .sheet.closing { animation: card-out 0.2s var(--ease-in) both; }
+  .sheet[open] { animation: sheet-up var(--menu-close-ms) var(--menu-close) backwards; }
+  .sheet.closing { animation: sheet-down 0.2s var(--ease-in) both; }
+  /* The same names as the phone's, so a sheet that is open while the window is resized across this width does not come in again. */
+  @keyframes sheet-up { from { opacity: 0; transform: translateY(18px) scale(0.97); } }
+  @keyframes sheet-down { to { opacity: 0; transform: translateY(10px) scale(0.98); } }
 }
-@keyframes card-in { from { opacity: 0; transform: translateY(18px) scale(0.97); } }
 @keyframes card-out { to { opacity: 0; transform: translateY(10px) scale(0.98); } }
 /* A sheet's head, as the app's: its name in the middle and a round glass button to close it; what scrolls under it thins out. */
 .sheet-head { position: relative; z-index: 1; display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; padding: 14px 12px 6px; }
@@ -698,7 +710,7 @@ dialog.closing { pointer-events: none; }
 @keyframes alert-in { from { opacity: 0; transform: scale(1.1); } 40% { opacity: 1; } }
 @keyframes alert-out { to { opacity: 0; transform: scale(0.96); } }
 .alert h2 { margin: 0 0 8px; font-size: 17px; }
-.alert p { margin: 0 0 8px; font-size: 15px; line-height: 1.5; }
+.alert p:not(.toast) { margin: 0 0 8px; font-size: 15px; line-height: 1.5; }
 .alert label { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.45; margin: 10px 0; }
 /* The one checkbox: the page's own chosen mark (as a row's check), not each browser's square. */
 .alert input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: none; width: 22px; height: 22px; margin: 0; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ring); display: grid; place-items: center; cursor: pointer; transition: background-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out); }
@@ -725,7 +737,9 @@ dialog.closing { pointer-events: none; }
   display: flex; align-items: center; gap: 12px;
 }
 @media (prefers-color-scheme: dark) { .toast { background: color-mix(in srgb, #2D2925 92%, transparent); } }
-body:has(#login:not([hidden])) .toast { top: calc(var(--safe-top) + 12px); }
+body:has(#login:not([hidden]):not(.leaving)) .toast { top: calc(var(--safe-top) + 12px); }
+/* In a sheet it stands under the sheet's head (clear of the title and the close button), and moves with the sheet. */
+.sheet > .toast { position: absolute; top: var(--under-head, 72px); max-width: calc(100% - 32px); }
 .toast.stayed { animation: none; }
 .toast.leaving { animation: sink-toast 0.2s var(--ease-in) both; pointer-events: none; }
 .toast[hidden] { display: none; }
@@ -737,7 +751,7 @@ body:has(#login:not([hidden])) .toast { top: calc(var(--safe-top) + 12px); }
 @keyframes sink-toast { to { opacity: 0; transform: translateY(-6px) scale(0.97); } }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after, *::backdrop { animation: none !important; transition: none !important; }
 }
 @media (max-width: 380px) {
   :root { --gutter: 14px; }
@@ -760,6 +774,13 @@ body:has(#login:not([hidden])) .toast { top: calc(var(--safe-top) + 12px); }
 @media (prefers-color-scheme: dark) {
   .inline-field select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23B3A898' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E"); }
 }
+/* On a phone the name has the row to itself (its placeholder was cut off), the role and the button under it. */
+@media (max-width: 480px) {
+  .inline-field:has(select) { flex-wrap: wrap; }
+  .inline-field:has(select) input { flex-basis: 100%; }
+  .inline-field:has(select) select { flex: 1; }
+}
+
 .thinking .label:empty { display: none; }
 .card strong { font-weight: 650; }
 
@@ -867,6 +888,8 @@ body:has(#login:not([hidden])) .toast { top: calc(var(--safe-top) + 12px); }
 /* The viewer does not rise: it fades in around the picture, which grows out of its thumbnail (app.js openViewer). */
 .sheet.viewer[open] { animation: fade-in 0.24s var(--ease-out) backwards; }
 .sheet.viewer.closing { animation: card-out 0.2s var(--ease-in) both; }
+/* Pulled down by a finger, it goes on down like the other sheets. */
+.sheet.viewer.closing.pulled { animation: sheet-down 0.3s var(--ease-drawer) both; }
 .sheet.viewer .sheet-head h2 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .viewer-body { flex: 1; min-height: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; padding: 8px 16px calc(var(--safe-bottom) + 16px); }
 .viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; border-radius: 12px; display: block; }
@@ -1144,4 +1167,5 @@ body:has(#login:not([hidden])) .toast { top: calc(var(--safe-top) + 12px); }
   .switch::after, .switch::before { forced-color-adjust: none; background: ButtonText; }
   .switch:checked { background: Highlight; }
   .choice[aria-checked="true"] .check { forced-color-adjust: none; }
+  .alert input[type="checkbox"] { border: 1.5px solid ButtonText; }
 }

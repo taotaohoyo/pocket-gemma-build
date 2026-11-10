@@ -304,9 +304,13 @@ function hostToast() {
     Promise.allSettled(arriving.map((motion) => motion.finished)).then(hostToast);
     return;
   }
-  // Moved while it shows: it stays as it is, with no second entrance.
-  if (!element.hidden) element.classList.add("stayed");
+  // Moved while it shows: where its place is the same (the page, an alert) it stays as it is, with no
+  // second entrance; into or out of a sheet its place is another one, and it comes in there anew.
+  const inSheet = (node) => node.classList.contains("sheet");
+  element.classList.toggle("stayed", !element.hidden && !inSheet(host) && !inSheet(element.parentElement));
   host.append(element);
+  if (inSheet(host)) element.style.setProperty("--under-head", `${host.querySelector(".sheet-head").offsetHeight + 4}px`);
+  else element.style.removeProperty("--under-head");
 }
 
 function confirmDialog({ title, body = [], ok = "OK", danger = false, check = null }) {
@@ -332,8 +336,8 @@ function confirmDialog({ title, body = [], ok = "OK", danger = false, check = nu
       $("confirm-cancel").onclick = null;
       dialog.onclose = null;
       dialog.oncancel = null;
-      closeDialog(dialog);
-      resolve(value);
+      // Answered once the alert has gone: until then the page under it takes no focus.
+      closeDialog(dialog).then(() => resolve(value));
     };
     okButton.onclick = () => done(true);
     $("confirm-cancel").onclick = () => done(false);
@@ -413,6 +417,8 @@ let loginOpening = 0;
 function showLogin(panel = "main", message = "", tone = "error") {
   const login = $("login");
   const appearing = login.hidden || isLeaving(login);
+  // The sign-in screen comes: nothing stays open over it (a sheet that was up when the relay said "signed out").
+  if (appearing) closeSheets();
   place($("splash"), false);
   $("chat").hidden = true;
   place(login, true);
@@ -420,12 +426,15 @@ function showLogin(panel = "main", message = "", tone = "error") {
     const section = $(id);
     const shown = id === `login-${panel}`;
     // Another form under the name: it comes up into place (the same one again, for an error, stays).
-    if (shown && section.hidden && !appearing) replay(section, "switched");
+    if (appearing) section.classList.remove("switched");
+    else if (shown && section.hidden) replay(section, "switched");
     section.hidden = !shown;
   }
   const error = $("login-error");
   const text = passkeysSupported() ? message : "このブラウザはパスキーに対応していません。";
-  if (text && (error.hidden || error.textContent !== text)) replay(error, "switched");
+  // (With the whole screen coming in, the line comes up with it: nothing of its own to play afterwards.)
+  if (appearing) error.classList.remove("switched");
+  else if (text && (error.hidden || error.textContent !== text)) replay(error, "switched");
   const note = tone === "note" && text === message;
   error.classList.toggle("note", note);
   error.setAttribute("role", note ? "status" : "alert");
@@ -916,6 +925,8 @@ function renderTray() {
     item.append(h("button", { type: "button", class: "tray-remove", "aria-label": `添付を外す: ${attachment.name}`, onclick: () => removeFromDraft(attachment) }, removeMark()));
     return item;
   });
+  // One that left with the row and is wanted again (the draft given back after a sign-in) is an item like the others.
+  for (const item of wanted) delete item.dataset.gone;
   const empty = state.draft.length === 0;
   // The last one out: the row closes with it still in it; otherwise the one taken out shrinks away.
   for (const child of [...tray.children]) if (!wanted.includes(child) && !isLeaving(child)) { if (empty) child.dataset.gone = "1"; else dismiss(child); }
@@ -923,6 +934,8 @@ function renderTray() {
   const staying = () => [...tray.children].filter((child) => !isLeaving(child) && !child.dataset.gone);
   wanted.forEach((item, index) => { if (staying()[index] !== item) tray.insertBefore(item, staying()[index] ?? null); });
   unfold(tray, !empty);
+  // Once the row has closed, what left with it is out of the page too (nothing of a sent or signed-out draft stays behind).
+  if (empty) setTimeout(() => { if (tray.hidden && !state.draft.length) tray.replaceChildren(); }, still() ? 0 : 320);
   tray.parentElement.classList.toggle("has-tray", !empty);
   unfold($("tray-status"), state.preparing > 0);
   updateComposer();
@@ -1366,7 +1379,7 @@ function autoGrow(animate = true) {
   input.style.height = "auto";
   const to = Math.min(input.scrollHeight, Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.4));
   input.style.height = `${to}px`;
-  if (animate && from && Math.abs(to - from) > 1 && !$("chat").hidden) move(input, [{ height: `${from}px` }, { height: `${to}px` }], { ms: 330, curve: "--resize" });
+  if (animate && from && Math.abs(to - from) > 1 && !$("chat").hidden) move(input, [{ height: `${from}px`, overflow: "hidden" }, { height: `${to}px`, overflow: "hidden" }], { ms: 330, curve: "--resize" });
 }
 
 async function sendFromComposer() {
@@ -1882,21 +1895,38 @@ function scrollToEnd(smooth) {
 }
 
 /** A finger on the conversation: the page never moves it from under the finger (Safari would stutter, or drop the gesture). */
-const finger = { touching: false };
+const finger = { touching: false, down: new Set() };
 
 function wireScroller() {
   const scroller = $("scroller");
   let pinned = true;
   let atEnd = false;
   let from = 0;
-  scroller.addEventListener("touchstart", () => { finger.touching = true; atEnd = isPinned(); from = scroller.scrollTop; }, { passive: true });
   const lifted = (event) => {
-    finger.touching = event.touches.length > 0;
+    for (const touch of event.changedTouches) finger.down.delete(touch.identifier);
+    if (!finger.touching || finger.down.size) return;
+    finger.touching = false;
     // What came under a resting finger is caught up with; a reader who moved up is left there.
-    if (!finger.touching && atEnd && state.streaming && scroller.scrollTop >= from - 8) scrollToEnd(false);
+    if (atEnd && state.streaming && scroller.scrollTop >= from - 8) scrollToEnd(false);
   };
-  scroller.addEventListener("touchend", lifted, { passive: true });
-  scroller.addEventListener("touchcancel", lifted, { passive: true });
+  scroller.addEventListener("touchstart", (event) => {
+    if (!finger.down.size) { atEnd = isPinned(); from = scroller.scrollTop; }
+    for (const touch of event.changedTouches) finger.down.add(touch.identifier);
+    finger.touching = true;
+    // A touch stays with the node it began on, and a reply being written is drawn anew under the finger:
+    // its end is heard from that node, which may no longer be in the page by then.
+    const target = event.target;
+    const end = (ended) => {
+      lifted(ended);
+      if (ended.targetTouches.length) return;
+      target.removeEventListener("touchend", end);
+      target.removeEventListener("touchcancel", end);
+    };
+    target.addEventListener("touchend", end, { passive: true });
+    target.addEventListener("touchcancel", end, { passive: true });
+  }, { passive: true });
+  // (A page put away with a finger still down hears no end at all.)
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { finger.down.clear(); finger.touching = false; } });
   const update = () => {
     pinned = isPinned();
     $("chat").classList.toggle("scrolled", scroller.scrollTop > 4);
@@ -2228,7 +2258,7 @@ async function developerSection() {
   // The credit left.
   section.push(h("div", { class: "card" },
     h("p", { text: adminState.credit ? `クレジットの残り：推定 ${Math.round(adminState.credit.percent)}%（約 ${formatUSD(adminState.credit.remainingUSD)}）` : "クレジットの残りは未入力です。" }),
-    h("div", { class: "row-actions" }, h("button", { type: "button", class: "secondary", text: "残高を入力・変更", onclick: () => { closeDialog($("settings-sheet")); openSheet("credit-sheet"); } }))));
+    h("div", { class: "row-actions" }, h("button", { type: "button", class: "secondary", text: "残高を入力・変更", onclick: () => closeDialog($("settings-sheet")).then(() => openSheet("credit-sheet")) }))));
   // Friends.
   const friendsSwitch = h("input", { type: "checkbox", class: "switch", role: "switch", "aria-label": "友人の利用", checked: settings.friendsEnabled ? true : null });
   friendsSwitch.addEventListener("change", async () => {
@@ -2919,9 +2949,12 @@ function applyDock(animate = true) {
     if (on) renderHistory();
     else { closeRowMenu(); endSearch(); }
   } else {
+    // The window got narrow with the keyboard in the list: the list goes, the keyboard stays on its button.
+    const inside = history.contains(document.activeElement);
     chat.classList.remove("docked");
     button.setAttribute("aria-label", "会話一覧を開く");
     setDrawer(false, { animate: false, focus: false });
+    if (inside) button.focus({ preventScroll: true });
   }
 }
 
@@ -3205,7 +3238,8 @@ function wireSheetPull(dialog) {
     pull = null;
     if (event.type === "pointerup" && ended.by > 0 && (ended.by > dialog.offsetHeight * 0.3 || ended.speed > 0.5)) {
       // Down from where the finger left it.
-      closeDialog(dialog).then(() => { dialog.style.transform = ""; });
+      dialog.classList.add("pulled");
+      closeDialog(dialog).then(() => { dialog.style.transform = ""; dialog.classList.remove("pulled"); });
       return;
     }
     dialog.style.transform = "";

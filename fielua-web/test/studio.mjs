@@ -101,6 +101,8 @@ export default async function studio({ browser, page0, admin, out, passkeyDevice
     const tag = `${kind}-${scheme}`;
     if (!wanted(`tour-${tag}`)) continue;
     const signedOut = await open(kind, scheme, { signedOut: true });
+    // The flower has opened and the words have come.
+    await sleep(2600);
     await shot(signedOut.page, `tour-${tag}-login`);
     await signedOut.context.close();
 

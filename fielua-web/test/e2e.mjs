@@ -439,6 +439,14 @@ try {
   const foreign = await fetch(`${relay}/v1/status`, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
   check("another site's page is refused before anything is read", foreign.status === 403 && !foreign.headers.get("access-control-allow-origin"));
 
+  // Enter in a field presses the button beside it (here with no code: the page asks for one).
+  await dev.click("#show-invite");
+  await dev.focus("#invite-code");
+  await dev.keyboard.press("Enter");
+  await dev.waitForSelector("#login-error:not([hidden])");
+  check("Enter in the invite code's field presses its button", (await dev.textContent("#login-error")).includes("招待コードを入れてください"));
+  await dev.click("#login-invite .back");
+
   // MARK: The developer's first setup
   await dev.click("#show-setup");
   await dev.click(".make-key summary");
@@ -1139,8 +1147,7 @@ try {
   await friend.goto(`${page0}#invite=${code}`);
   await friend.waitForSelector("#login-invite:not([hidden])");
   check("an invite link opens the invite with its code, and the code leaves the address", (await friend.inputValue("#invite-code")) === code && !friend.url().includes(code));
-  await friend.focus("#invite-code");
-  await friend.keyboard.press("Enter");
+  await friend.click("#invite-register");
   await friend.waitForSelector("#chat:not([hidden])", { timeout: 15000 });
   check("the friend registers with a passkey", await friend.isVisible("#composer"));
   await friend.fill("#input", "こんにちは");

@@ -39,6 +39,14 @@ export function move(element, frames, { ms = 300, curve = "--ease-out", ...rest 
 }
 
 const folds = new WeakMap();
+const SHUT = { marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px", borderTopWidth: "0px", borderBottomWidth: "0px" };
+/** Where a folding element stands right now (turned around mid-way, it goes on from there). */
+function standing(element) {
+  const style = getComputedStyle(element);
+  const at = { height: `${element.offsetHeight}px`, opacity: style.opacity, overflow: "hidden" };
+  for (const name of Object.keys(SHUT)) at[name] = style[name];
+  return at;
+}
 /**
  * Shows or hides an element that takes room, opening or closing that room
  * instead of making what is around it jump. `hidden` goes on once it has
@@ -48,31 +56,24 @@ export function unfold(element, shown) {
   const running = folds.get(element);
   if (shown) {
     if (!element.hidden && !running) return;
-    const from = running ? element.offsetHeight : 0;
+    const from = running ? standing(element) : { height: "0px", opacity: 0, overflow: "hidden", ...SHUT };
     running?.cancel();
     folds.delete(element);
     element.hidden = false;
     const to = element.offsetHeight;
-    const opening = move(element, [
-      { height: `${from}px`, opacity: from ? 1 : 0, overflow: "hidden", ...(from ? {} : SHUT) },
-      { height: `${to}px`, opacity: 1, overflow: "hidden" },
-    ], { ms: 330, curve: "--resize" });
+    const opening = move(element, [from, { height: `${to}px`, opacity: 1, overflow: "hidden" }], { ms: 330, curve: "--resize" });
     if (opening) { folds.set(element, opening); opening.onfinish = opening.oncancel = () => { if (folds.get(element) === opening) folds.delete(element); }; }
     return;
   }
   if (element.hidden || running?.closing) return;
-  const from = element.offsetHeight;
+  const from = running ? standing(element) : { height: `${element.offsetHeight}px`, opacity: 1, overflow: "hidden" };
   running?.cancel();
-  const closing = move(element, [
-    { height: `${from}px`, opacity: 1, overflow: "hidden" },
-    { height: "0px", opacity: 0, overflow: "hidden", ...SHUT },
-  ], { ms: 260, curve: "--resize", fill: "forwards" });
+  const closing = move(element, [from, { height: "0px", opacity: 0, overflow: "hidden", ...SHUT }], { ms: 260, curve: "--resize", fill: "forwards" });
   if (!closing) { folds.delete(element); element.hidden = true; return; }
   closing.closing = true;
   folds.set(element, closing);
   closing.onfinish = () => { if (folds.get(element) !== closing) return; folds.delete(element); element.hidden = true; closing.cancel(); };
 }
-const SHUT = { marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px", borderTopWidth: "0px", borderBottomWidth: "0px" };
 /** Closing now (its `hidden` still to come). */
 export const isFolding = (element) => !!folds.get(element)?.closing;
 
@@ -150,19 +151,72 @@ const watchers = new Set();
 export const watchDialogs = (listener) => { watchers.add(listener); };
 const tell = () => { for (const listener of watchers) listener(); };
 
-/** Opens a <dialog> as a modal one (the stylesheet brings it in); one that was closing stays. */
+const closers = new WeakMap();
+/** Everyone waiting for the dialog's close hears that the wait is over (closed, or kept after all). */
+function release(dialog) {
+  const waiting = closers.get(dialog) ?? [];
+  closers.delete(dialog);
+  for (const resolve of waiting) resolve();
+}
+
+/** Where a dialog stands on its way in or out, to go on from there. */
+function caught(dialog) {
+  const style = getComputedStyle(dialog);
+  return { transform: style.transform, opacity: style.opacity };
+}
+const held = new WeakSet();
+function unhold(dialog) {
+  if (!held.delete(dialog)) return;
+  dialog.style.transform = "";
+  dialog.style.opacity = "";
+}
+
+/**
+ * Opens a <dialog> as a modal one (the stylesheet brings it in). One that
+ * was closing stays: it comes back from where it had got to, with no second
+ * entrance, and whoever waited for its close stops waiting.
+ */
 export function openDialog(dialog) {
-  if (waits.has(dialog)) { settle(dialog); dialog.classList.remove("closing"); }
+  if (waits.has(dialog)) {
+    const from = caught(dialog);
+    settle(dialog);
+    dialog.classList.remove("closing");
+    dialog.classList.add("stayed");
+    unhold(dialog);
+    dialog.style.transform = "";
+    move(dialog, [from, { transform: "none", opacity: 1 }], { ms: 300, curve: "--menu-close" });
+    release(dialog);
+  } else if (!dialog.open) {
+    dialog.classList.remove("stayed");
+  }
   if (!dialog.open) dialog.showModal();
   tell();
 }
 
-/** Closes a <dialog> after its `.closing` motion. Resolves once it is closed. */
+/**
+ * Closes a <dialog> after its `.closing` motion, from wherever it stands
+ * (still coming in, or pulled down by a finger). Resolves once it is closed,
+ * or once it is kept open after all.
+ */
 export function closeDialog(dialog) {
   if (!dialog.open) return Promise.resolve();
-  if (waits.has(dialog)) return new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
   return new Promise((resolve) => {
-    after(dialog, "closing", () => { if (dialog.open) dialog.close(); tell(); resolve(); });
+    closers.set(dialog, [...(closers.get(dialog) ?? []), resolve]);
+    if (waits.has(dialog)) return;
+    // Still on its way in: it leaves from where it is, not from its resting place.
+    if (!still() && !dialog.style.transform && (dialog.getAnimations?.() ?? []).some((motion) => motion.playState === "running")) {
+      const from = caught(dialog);
+      held.add(dialog);
+      dialog.style.transform = from.transform;
+      dialog.style.opacity = from.opacity;
+    }
+    dialog.classList.remove("stayed");
+    after(dialog, "closing", () => {
+      if (dialog.open) dialog.close();
+      unhold(dialog);
+      tell();
+      release(dialog);
+    });
     tell();
   });
 }
@@ -170,7 +224,11 @@ export function closeDialog(dialog) {
 /** Closes it with no motion (the page is going away, or the person is signed out). */
 export function closeDialogNow(dialog) {
   settle(dialog);
-  dialog.classList.remove("closing");
+  dialog.classList.remove("closing", "stayed");
+  for (const motion of dialog.getAnimations?.() ?? []) motion.cancel();
+  unhold(dialog);
+  dialog.style.transform = "";
   if (dialog.open) dialog.close();
   tell();
+  release(dialog);
 }
