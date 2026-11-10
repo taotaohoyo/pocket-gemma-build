@@ -130,7 +130,7 @@ try {
 
   // The model and level the person chose
   check("the app learns the four models and their levels", JSON.stringify(status.models?.map((m) => [m.id, m.efforts.join("/")])) ===
-    JSON.stringify(["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"].map((id) => [id, "low/medium/high/xhigh"])));
+    JSON.stringify(["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"].map((id) => [id, "low/medium/high/xhigh"])));
   await (await api("POST", "/v1/messages", { token, body: { ...ask("こんにちは"), model: "claude-opus-5-5", effort: "xhigh" } })).text();
   const top = upstream.requests.at(-1).body;
   check("Opus 5.5 at 超高 goes out as effort xhigh", top.model === "claude-opus-5-5" && top.output_config?.effort === "xhigh" && top.max_tokens === 64000, JSON.stringify(top.output_config));

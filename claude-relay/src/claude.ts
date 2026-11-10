@@ -31,19 +31,27 @@ export interface ModelInfo {
   defaultEffort: Effort;
   /** Takes the server-side fallback on a refusal (Claude Haiku 5.5 has none). */
   fallback: boolean;
+  /**
+   * No longer offered, as a newer model took its place, but still taken:
+   * a chat the iPhone app began with it goes on with it.
+   */
+  former?: true;
 }
 
 /**
- * The models a person may choose, in the order Fielua shows them (Opus 5.5
- * first: Fielua's top choice is Opus 5.5 at 超高). Checked against
- * Anthropic's models overview and effort pages on 2026-11-06: every one
- * takes low to max; Fielua leaves max out. Anything not here is refused.
+ * The models a person may choose, in the order Fielua shows them (Opus 5.5,
+ * the default, first). Checked against Anthropic's models overview and
+ * effort pages on 2026-11-06, and Claude Fable 5.2 against its migration
+ * guide on 2026-11-10: every one takes low to max; Fielua leaves max out.
+ * Anything not here is refused.
  */
 export const MODELS: readonly ModelInfo[] = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", fallback: true },
-  { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: EFFORTS, defaultEffort: "high", fallback: true },
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: EFFORTS, defaultEffort: "high", fallback: true },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: EFFORTS, defaultEffort: "high", fallback: true },
   { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: EFFORTS, defaultEffort: "medium", fallback: false },
+  // Claude Fable 5.2 took its place on 2026-11-10 (Anthropic still serves it).
+  { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: EFFORTS, defaultEffort: "high", fallback: true, former: true },
 ];
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
@@ -89,7 +97,7 @@ export function config(env: {
   const base = env.ANTHROPIC_BASE_URL;
   return {
     apiKey: env.ANTHROPIC_API_KEY,
-    model: env.CLAUDE_MODEL && modelInfo(env.CLAUDE_MODEL) ? env.CLAUDE_MODEL : DEFAULT_MODEL,
+    model: env.CLAUDE_MODEL && modelInfo(env.CLAUDE_MODEL) && !modelInfo(env.CLAUDE_MODEL)!.former ? env.CLAUDE_MODEL : DEFAULT_MODEL,
     maxTokens: Number.isFinite(tokens) ? Math.min(Math.max(tokens, 1024), 128000) : 64000,
     baseURL: base && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(base) ? base : ANTHROPIC_API,
   };

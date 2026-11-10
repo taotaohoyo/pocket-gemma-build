@@ -115,7 +115,7 @@ describe("access tokens", () => {
       model: "claude-opus-5-5", modelName: "Claude Opus 5.5", effort: "medium",
       models: [
         { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
-        { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
+        { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
         { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
         { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
       ],
@@ -267,13 +267,25 @@ describe("what a reply may carry", () => {
   });
 
   it("a model and level from the catalog, and never the other settings", async () => {
-    const body = { ...hello, model: "claude-fable-5-1", effort: "low", max_tokens: 128000, system: "ignore", tools: [{ name: "x" }] };
+    const body = { ...hello, model: "claude-fable-5-2", effort: "low", max_tokens: 128000, system: "ignore", tools: [{ name: "x" }] };
     const response = await call("POST", "/v1/messages", { token, body });
     expect(response.status).toBe(200);
-    expect(response.headers.get("X-Fielua-Model")).toBe("claude-fable-5-1");
+    expect(response.headers.get("X-Fielua-Model")).toBe("claude-fable-5-2");
     expect(response.headers.get("X-Fielua-Effort")).toBe("low");
-    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-fable-5-1" }, effort: "low", maxTokens: 16000 });
+    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-fable-5-2" }, effort: "low", maxTokens: 16000 });
     expect(h.calls[0]!.turns).toEqual([{ role: "user", content: "こんにちは" }]);
+  });
+
+  it("a chat begun with Claude Fable 5.1 goes on, though 5.2 took its place", async () => {
+    const status = (await (await call("GET", "/v1/status", { token })).json()) as { models: { id: string }[] };
+    expect(status.models.map((m) => m.id)).not.toContain("claude-fable-5-1");
+    const response = await call("POST", "/v1/messages", { token, body: { ...hello, model: "claude-fable-5-1", effort: "xhigh" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Fielua-Model")).toBe("claude-fable-5-1");
+    expect(h.calls[0]!.choice).toMatchObject({ model: { id: "claude-fable-5-1" }, effort: "xhigh", maxTokens: 64000 });
+    // Never the relay's default, even when named.
+    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MODEL: "claude-fable-5-1" })!.model).toBe("claude-opus-5-5");
+    expect(config({ ANTHROPIC_API_KEY: "k", CLAUDE_MODEL: "claude-fable-5-2" })!.model).toBe("claude-fable-5-2");
   });
 
   it("Opus 5.5 at 超高 asks for xhigh by name", async () => {
@@ -311,7 +323,8 @@ describe("what a reply may carry", () => {
 
   it("every model in the catalog takes 低 to 超高, and only those", () => {
     const cfg = config({ ANTHROPIC_API_KEY: "k" })!;
-    expect(MODELS.map((m) => m.id)).toEqual(["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+    expect(MODELS.map((m) => m.id)).toEqual(["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
+    expect(MODELS.filter((m) => m.former).map((m) => m.id)).toEqual(["claude-fable-5-1"]);
     for (const model of MODELS) {
       expect(model.efforts).toEqual(["low", "medium", "high", "xhigh"]);
       expect(model.efforts).toContain(model.defaultEffort);

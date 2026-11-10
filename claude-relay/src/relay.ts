@@ -112,7 +112,8 @@ async function status(request: Request, env: RelayEnv, deps: Deps): Promise<Resp
     model,
     modelName: modelName(model),
     effort: modelInfo(model)?.defaultEffort ?? null,
-    models: MODELS.map(({ id, name, efforts, defaultEffort }) => ({ id, name, efforts, defaultEffort })),
+    // Former models left out: no new chat starts with one.
+    models: MODELS.filter((m) => !m.former).map(({ id, name, efforts, defaultEffort }) => ({ id, name, efforts, defaultEffort })),
   });
 }
 
