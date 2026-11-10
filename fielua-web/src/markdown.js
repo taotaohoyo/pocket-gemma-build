@@ -411,12 +411,18 @@ export async function copyText(text) {
   }
 }
 
-function flash(button, text) {
+/** A button says `text` for a moment, then its own words again. It keeps its width meanwhile, so what stands beside it stays put. */
+export function flash(button, text) {
   const original = button.dataset.label ?? button.textContent;
   button.dataset.label = original;
-  button.textContent = text;
+  const say = (words) => {
+    button.textContent = words;
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) button.animate?.([{ opacity: 0.25 }, { opacity: 1 }], { duration: 220, easing: "ease-out" });
+  };
+  if (!button.style.minWidth) button.style.minWidth = `${button.offsetWidth}px`;
+  say(text);
   clearTimeout(Number(button.dataset.timer));
-  button.dataset.timer = String(setTimeout(() => { button.textContent = original; }, 1600));
+  button.dataset.timer = String(setTimeout(() => { say(original); button.style.minWidth = ""; }, 1600));
 }
 
 /** The buttons inside replies: copy code or a table, show the rest of long code or a long table. */
@@ -439,7 +445,11 @@ export function attachReplyActions(container) {
     const more = button.getAttribute("data-more");
     const block = button.closest(more === "code" ? ".fl-code" : ".fl-table");
     if (!block) return;
+    // Folded again from its end: the button stays under the finger (Safari would leave the reader far below).
+    const scroller = block.closest(".scroller");
+    const before = button.getBoundingClientRect().top;
     const collapsed = block.classList.toggle("collapsed");
+    if (collapsed && scroller) scroller.scrollTop += button.getBoundingClientRect().top - before;
     const rest = button.getAttribute("data-rest");
     button.textContent = collapsed ? `残り${rest}行を表示` : more === "code" ? "折りたたむ" : "表を折りたたむ";
   });

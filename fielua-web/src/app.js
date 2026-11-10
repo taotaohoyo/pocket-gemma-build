@@ -5,7 +5,9 @@
 import { RELAY, RelayError, call, callJSON, session } from "./api.js";
 import { ACCEPT, AttachError, LIMITS as ATTACH, prepare, release, sizeLabel, stored, timeLabel } from "./attach.js";
 import * as archive from "./history.js";
-import { attachReplyActions, copyText, loadMath, ReplyView } from "./markdown.js";
+import { attachReplyActions, copyText, flash, loadMath, ReplyView } from "./markdown.js";
+import { closeDialog, closeDialogNow, dismiss, isFolding, isLeaving, move, openDialog, place, present, replay, still, unfold, watchDialogs } from "./motion.js";
+import { alive, bloom, flowerMark } from "./flower.js";
 import { createPasskey, forgetPasskey, newAdminKey, passkeysSupported, usePasskey } from "./passkey.js";
 import { Pacer, readEvents } from "./stream.js";
 
@@ -280,13 +282,31 @@ let toastTimer = 0;
 /** A short line above the composer; with `action` ({ label, run }), a button in it, for a few seconds more. */
 function toast(text, action = null) {
   const element = $("toast");
+  hostToast();
   element.replaceChildren(h("span", { text }));
   if (action) {
-    element.append(h("button", { type: "button", class: "toast-action", text: action.label, onclick: () => { element.hidden = true; action.run(); } }));
+    element.append(h("button", { type: "button", class: "toast-action", text: action.label, onclick: () => { clearTimeout(toastTimer); present(element, false); action.run(); } }));
   }
-  element.hidden = false;
+  present(element, true);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { element.hidden = true; }, action ? 6000 : Math.max(2400, text.length * 90));
+  toastTimer = setTimeout(() => present(element, false), action ? 6000 : Math.max(2400, text.length * 90));
+}
+
+/** A sheet or an alert covers everything else on the page: while one is open, the toast is shown in it. */
+function hostToast() {
+  const element = $("toast");
+  const host = [...document.querySelectorAll("dialog[open]:not(.closing)")].pop() ?? document.body;
+  if (element.parentElement === host) return;
+  // A dialog still on its way in would carry the toast along (its transform
+  // and its fade are the toast's too): the toast joins it once it has arrived.
+  const arriving = host === document.body ? [] : (host.getAnimations?.() ?? []).filter((motion) => motion.playState === "running");
+  if (arriving.length) {
+    Promise.allSettled(arriving.map((motion) => motion.finished)).then(hostToast);
+    return;
+  }
+  // Moved while it shows: it stays as it is, with no second entrance.
+  if (!element.hidden) element.classList.add("stayed");
+  host.append(element);
 }
 
 function confirmDialog({ title, body = [], ok = "OK", danger = false, check = null }) {
@@ -311,13 +331,16 @@ function confirmDialog({ title, body = [], ok = "OK", danger = false, check = nu
       okButton.onclick = null;
       $("confirm-cancel").onclick = null;
       dialog.onclose = null;
-      if (dialog.open) dialog.close();
+      dialog.oncancel = null;
+      closeDialog(dialog);
       resolve(value);
     };
     okButton.onclick = () => done(true);
     $("confirm-cancel").onclick = () => done(false);
+    // Escape: answered no, and it leaves as it would for キャンセル.
+    dialog.oncancel = (event) => { event.preventDefault(); done(false); };
     dialog.onclose = () => done(false);
-    dialog.showModal();
+    openDialog(dialog);
   });
 }
 
@@ -385,16 +408,36 @@ function loginErrorText(error) {
 
 // MARK: Sign in
 
-function showLogin(panel = "main", message = "") {
+let loginOpening = 0;
+/** `tone` "note": the message is no error, only what the person just did (signed out). */
+function showLogin(panel = "main", message = "", tone = "error") {
+  const login = $("login");
+  const appearing = login.hidden || isLeaving(login);
+  place($("splash"), false);
   $("chat").hidden = true;
-  $("login").hidden = false;
-  for (const id of ["login-main", "login-invite", "login-setup"]) $(id).hidden = id !== `login-${panel}`;
+  place(login, true);
+  for (const id of ["login-main", "login-invite", "login-setup"]) {
+    const section = $(id);
+    const shown = id === `login-${panel}`;
+    // Another form under the name: it comes up into place (the same one again, for an error, stays).
+    if (shown && section.hidden && !appearing) replay(section, "switched");
+    section.hidden = !shown;
+  }
   const error = $("login-error");
-  error.textContent = message;
-  error.hidden = !message;
-  if (!passkeysSupported()) {
-    error.textContent = "このブラウザはパスキーに対応していません。";
-    error.hidden = false;
+  const text = passkeysSupported() ? message : "このブラウザはパスキーに対応していません。";
+  if (text && (error.hidden || error.textContent !== text)) replay(error, "switched");
+  const note = tone === "note" && text === message;
+  error.classList.toggle("note", note);
+  error.setAttribute("role", note ? "status" : "alert");
+  error.textContent = text;
+  error.hidden = !text;
+  if (appearing) {
+    // The sign-in screen comes into view: the flower opens, and the name and the form come up under it.
+    flowers.stopBloom?.();
+    flowers.stopBloom = flowers.login ? bloom(flowers.login) : null;
+    replay(login, "opening");
+    clearTimeout(loginOpening);
+    loginOpening = setTimeout(() => login.classList.remove("opening"), 1300);
   }
 }
 
@@ -456,6 +499,10 @@ function wireLogin() {
     }
   });
 
+  enterPresses($("invite-code"), $("invite-register"));
+  enterPresses($("setup-admin-key"), $("setup-register"));
+  enterPresses($("setup-name"), $("setup-register"));
+
   $("make-admin-key").addEventListener("click", async () => {
     const key = newAdminKey();
     const output = $("made-admin-key");
@@ -504,8 +551,13 @@ async function enterChat(signedIn = false) {
   if (!session.get()) return;
   // Signed in anew in this tab: the conversation left from before waits, unseen, until the key says whose it is.
   if (signedIn) holdChat();
-  $("login").hidden = true;
-  $("chat").hidden = false;
+  // The chat comes in over what was there: the sign-in screen, or the flower that stood for the page.
+  const chat = $("chat");
+  const splash = $("splash");
+  if (chat.hidden && splash.hidden) replay(chat, "arriving");
+  present(splash, false);
+  present($("login"), false);
+  chat.hidden = false;
   applyDock(false);
   renderTopbar();
   renderThread();
@@ -584,8 +636,14 @@ function modelName(id) {
 
 function renderTopbar() {
   const { model, effort } = choice();
-  $("model-name").textContent = model.name;
-  $("model-sub").textContent = `推論 ${EFFORT[effort]?.title ?? effort} · 外部AI`;
+  // A changed name or level comes up into its place; the same one again (every status check) does nothing.
+  for (const [element, text] of [[$("model-name"), model.name], [$("model-sub"), `推論 ${EFFORT[effort]?.title ?? effort} · 外部AI`]]) {
+    if (element.textContent === text) continue;
+    const first = !element.dataset.set || $("chat").hidden;
+    element.textContent = text;
+    element.dataset.set = "1";
+    if (!first) replay(element, "changed");
+  }
   // The name read aloud starts with what the button shows (voice control says what it sees).
   $("model-button").setAttribute("aria-label", `${model.name} 推論 ${EFFORT[effort]?.title ?? effort} · 外部AI、モデルと推論レベルを変える`);
   $("empty-line").textContent = "メッセージは Anthropic の Claude に送られます。";
@@ -593,9 +651,10 @@ function renderTopbar() {
 
 function showBanner(text, warn = false) {
   const banner = $("banner");
-  banner.textContent = text;
-  banner.classList.toggle("warn", warn);
-  banner.hidden = !text;
+  // Its room opens and closes (the words stay while it closes).
+  if (text) banner.replaceChildren(...(warn ? [icon("alert")] : []), h("span", { text }));
+  if (text) banner.classList.toggle("warn", warn);
+  if ($("chat").hidden) banner.hidden = !text; else unfold(banner, !!text);
 }
 
 function updateBanner() {
@@ -615,7 +674,15 @@ function renderThread() {
   holder.replaceChildren();
   state.views.clear();
   for (const message of state.chat.messages) holder.append(messageElement(message));
-  $("empty").hidden = state.chat.messages.length > 0;
+  // Another conversation, or a new one: it fades in, with no part of it moving.
+  const empty = $("empty");
+  const wasEmpty = !empty.hidden && !isLeaving(empty);
+  place(empty, state.chat.messages.length === 0);
+  if (!$("chat").hidden) {
+    if (state.chat.messages.length) replay(holder, "switched");
+    else if (!wasEmpty) replay(empty, "shown");
+  }
+  checkFlower();
   requestAnimationFrame(() => scrollToEnd(false));
 }
 
@@ -635,6 +702,7 @@ function messageElement(message) {
 
 const ICONS = {
   plus: ["M12 5.5v13M5.5 12h13"],
+  alert: ["M12 3.5a8.5 8.5 0 1 0 0 17a8.5 8.5 0 0 0 0-17Z", "M12 7.8v5.2", "M12 16.2h.01"],
   photo: ["M6 5.5h12a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 18 18.5H6A2.5 2.5 0 0 1 3.5 16V8A2.5 2.5 0 0 1 6 5.5Z", "m4 16.5 4.5-4.5 3.5 3.5 2.5-2.5 5.5 5.5", "M15.5 9.5h.01"],
   video: ["M5.5 6.5h8a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5h-8A2.5 2.5 0 0 1 3 15V9a2.5 2.5 0 0 1 2.5-2.5Z", "m16 10.5 5-3v9l-5-3"],
   folder: ["M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"],
@@ -692,7 +760,7 @@ function pictureElement(attachment) {
     "aria-label": attachment.kind === "video" && attachment.duration
       ? `${timeLabel(attachment.duration)} 動画を開く: ${attachment.name}`
       : `${attachment.kind === "video" ? "動画" : "写真"}を開く: ${attachment.name}`,
-    onclick: () => openViewer(attachment),
+    onclick: (event) => openViewer(attachment, event.currentTarget),
   }, h("img", { src: attachment.thumb, alt: "", width: String(box.width), height: String(box.height), draggable: "false" }));
   figure.style.width = `${box.width}px`;
   figure.style.height = `${box.height}px`;
@@ -732,7 +800,7 @@ function sentElement(message) {
 }
 
 /** A photo at its sent size, or a video while this page still holds it. */
-function openViewer(attachment) {
+function openViewer(attachment, pressed = null) {
   const body = $("viewer-body");
   if (attachment.kind === "video" && attachment.play) {
     body.replaceChildren(h("video", { src: attachment.play, controls: true, playsinline: true, autoplay: true }));
@@ -741,7 +809,23 @@ function openViewer(attachment) {
     body.replaceChildren(h("img", { src: data ? `data:image/jpeg;base64,${data}` : attachment.thumb, alt: attachment.name }));
   }
   $("viewer-title").textContent = attachment.name;
-  $("viewer").showModal();
+  openDialog($("viewer"));
+  // The picture grows out of the one that was pressed (the sheet around it only fades in), and stays.
+  const picture = body.firstElementChild;
+  if (!pressed || picture.tagName !== "IMG") return;
+  const grow = () => {
+    const from = pressed.getBoundingClientRect();
+    const to = picture.getBoundingClientRect();
+    if (!from.width || !to.width || !to.height || !picture.isConnected) return;
+    const scale = Math.max(from.width / to.width, from.height / to.height);
+    const x = from.left + from.width / 2 - to.left - to.width / 2;
+    const y = from.top + from.height / 2 - to.top - to.height / 2;
+    move(picture, [
+      { transform: `translate(${x}px, ${y}px) scale(${scale})`, borderRadius: `${18 / scale}px` },
+      { transform: "none", borderRadius: "12px" },
+    ], { ms: 590, curve: "--sheet-open" });
+  };
+  if (picture.complete && picture.naturalWidth) grow(); else picture.addEventListener("load", grow, { once: true });
 }
 
 /** What one request may carry as base64, as the relay says; 0 when it does not say (an older relay). */
@@ -832,27 +916,32 @@ function renderTray() {
     item.append(h("button", { type: "button", class: "tray-remove", "aria-label": `添付を外す: ${attachment.name}`, onclick: () => removeFromDraft(attachment) }, removeMark()));
     return item;
   });
-  for (const child of [...tray.children]) if (!wanted.includes(child)) child.remove();
-  wanted.forEach((item, index) => { if (tray.children[index] !== item) tray.insertBefore(item, tray.children[index] ?? null); });
-  tray.hidden = state.draft.length === 0;
-  tray.parentElement.classList.toggle("has-tray", !tray.hidden);
-  $("tray-status").hidden = state.preparing === 0;
+  const empty = state.draft.length === 0;
+  // The last one out: the row closes with it still in it; otherwise the one taken out shrinks away.
+  for (const child of [...tray.children]) if (!wanted.includes(child) && !isLeaving(child)) { if (empty) child.dataset.gone = "1"; else dismiss(child); }
+  if (!empty) for (const child of [...tray.children]) if (child.dataset.gone) child.remove();
+  const staying = () => [...tray.children].filter((child) => !isLeaving(child) && !child.dataset.gone);
+  wanted.forEach((item, index) => { if (staying()[index] !== item) tray.insertBefore(item, staying()[index] ?? null); });
+  unfold(tray, !empty);
+  tray.parentElement.classList.toggle("has-tray", !empty);
+  unfold($("tray-status"), state.preparing > 0);
   updateComposer();
 }
 
 function wireAttachments() {
   const menu = $("attach-menu");
   const button = $("attach");
+  const isOpen = () => !menu.hidden && !isLeaving(menu);
   const close = () => {
-    menu.hidden = true;
+    present(menu, false);
     button.setAttribute("aria-expanded", "false");
   };
   button.addEventListener("click", () => {
-    if (!menu.hidden) { close(); return; }
+    if (isOpen()) { close(); return; }
     const full = state.draft.length + state.preparing >= ATTACH.perMessage;
     for (const item of menu.querySelectorAll("[data-pick]")) item.disabled = !!state.streaming || state.preparing > 0 || full;
     $("menu-new-chat").disabled = !!state.streaming;
-    menu.hidden = false;
+    present(menu, true);
     button.setAttribute("aria-expanded", "true");
     renderTools();
     menu.querySelector("button:not(:disabled):not([hidden])")?.focus({ preventScroll: true });
@@ -875,11 +964,27 @@ function wireAttachments() {
     });
   }
   document.addEventListener("pointerdown", (event) => {
-    if (!menu.hidden && !menu.contains(event.target) && !button.contains(event.target)) close();
+    if (isOpen() && !menu.contains(event.target) && !button.contains(event.target)) close();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) { close(); button.focus(); }
+    if (event.key === "Escape" && isOpen()) { close(); button.focus(); }
   });
+  walkWithArrows(menu, "button");
+  // Tab leaves the menu shut, and the keyboard is back on the plus (which a chosen row leaves too).
+  menu.addEventListener("keydown", (event) => {
+    if (event.key === "Tab" && isOpen()) { event.preventDefault(); close(); button.focus(); }
+  });
+  menu.addEventListener("click", (event) => {
+    // (Unless the row put the keyboard somewhere itself, as a new chat does.)
+    if (event.detail === 0 && !isOpen() && menu.contains(document.activeElement)) button.focus({ preventScroll: true });
+  });
+  // An ordinary wheel moves along the attachments (they lie in a row).
+  $("tray").addEventListener("wheel", (event) => {
+    const tray = event.currentTarget;
+    if (event.deltaX || !event.deltaY || event.ctrlKey || tray.scrollWidth <= tray.clientWidth) return;
+    event.preventDefault();
+    tray.scrollLeft += event.deltaY * (event.deltaMode === 1 ? 16 : 1);
+  }, { passive: false });
   // A pasted screenshot or file; text pastes as text.
   $("input").addEventListener("paste", (event) => {
     const files = Array.from(event.clipboardData?.files ?? []);
@@ -930,11 +1035,24 @@ const TOOL_LABELS = {
 function renderTools() {
   const offered = !!state.status?.tools;
   const pills = $("tool-pills");
-  pills.replaceChildren(...Object.entries(TOOL_LABELS).filter(([key]) => offered && state.prefs.tools[key]).map(([key, label]) =>
-    h("button", {
-      type: "button", class: "tool-pill", "aria-label": `${label.name}をオフにする`, disabled: !!state.streaming,
-      onclick: () => setTool(key, false),
-    }, icon(label.icon), h("span", { text: label.short }))));
+  // A pill stays while its tool is on (drawn again, it would come in again): it comes in when the tool is turned on, and goes when it is turned off.
+  const keys = Object.keys(TOOL_LABELS);
+  for (const [key, label] of Object.entries(TOOL_LABELS)) {
+    const on = offered && !!state.prefs.tools[key];
+    let pill = [...pills.children].find((child) => child.dataset.tool === key && !isLeaving(child));
+    if (on && !pill) {
+      pill = h("button", {
+        type: "button", class: `tool-pill${pills.dataset.drawn ? " fresh" : ""}`, "aria-label": `${label.name}をオフにする`, dataset: { tool: key },
+        onclick: () => setTool(key, false),
+      }, icon(label.icon), h("span", { text: label.short }));
+      pills.insertBefore(pill, [...pills.children].find((child) => keys.indexOf(child.dataset.tool) > keys.indexOf(key)) ?? null);
+    } else if (!on && pill) {
+      dismiss(pill);
+      pill = null;
+    }
+    if (pill) pill.disabled = !!state.streaming;
+  }
+  pills.dataset.drawn = "1";
   for (const row of document.querySelectorAll("#attach-menu [data-tool]")) {
     row.hidden = !offered;
     row.disabled = !!state.streaming;
@@ -1103,8 +1221,7 @@ function captionFor(message) {
       type: "button", class: "text", text: "返信をコピー",
       onclick: async (event) => {
         const button = event.currentTarget;
-        button.textContent = (await copyText(message.text)) ? "コピーしました" : "コピーできません";
-        setTimeout(() => { button.textContent = "返信をコピー"; }, 1600);
+        flash(button, (await copyText(message.text)) ? "コピーしました" : "コピーできません");
       },
     }));
   }
@@ -1118,9 +1235,11 @@ const END_NOTICES = {
 };
 
 /** The lines under a finished reply: which model answered, and what stopped it. */
-function finishElement(message) {
+/** What stands around a reply once it has ended. `fresh`: it ended just now, so these come in softly. */
+function finishElement(message, fresh = false) {
   const entry = state.views.get(message);
   if (!entry) return;
+  entry.element.classList.toggle("ended-now", fresh);
   entry.element.querySelector(".thinking")?.remove();
   entry.element.querySelector(".caption")?.remove();
   entry.element.querySelector(".notice")?.remove();
@@ -1134,7 +1253,7 @@ function finishElement(message) {
   if (message.files?.length) entry.element.append(filesElement(message));
   const text = message.error ?? END_NOTICES[message.end];
   if (text) {
-    const notice = h("div", { class: `notice${message.error ? " error" : ""}`, role: message.error ? "alert" : null }, h("div", { text }));
+    const notice = h("div", { class: `notice${message.error ? " error" : ""}`, role: message.error && fresh ? "alert" : null }, message.error ? icon("alert") : null, h("div", { text }));
     if (message.error && message.end === "failed" && isLast(message)) {
       notice.append(h("div", { class: "actions" }, h("button", { type: "button", class: "secondary", text: "もう一度送る", onclick: () => retry(message) })));
     }
@@ -1210,12 +1329,44 @@ function updateComposer() {
   const blocked = state.status && !state.status.available;
   send.disabled = streaming ? false : (!input.value.trim() && !state.draft.length) || state.preparing > 0 || blocked;
   for (const pill of $("tool-pills").children) pill.disabled = streaming;
+  // While something is typed the empty chat's flower is away (the app's FlowerAway).
+  $("empty").classList.toggle("typing", !!input.value);
+  checkFlower();
 }
 
-function autoGrow() {
+// MARK: The flower (flower.js): it opens on the sign-in screen and lives in the empty chat
+
+const flowers = { login: null, life: null, stopBloom: null };
+
+function plantFlowers() {
+  const login = document.querySelector("img.login-flower");
+  const empty = document.querySelector("img.empty-flower");
+  if (!login || !empty) return;
+  flowers.login = flowerMark("login-flower");
+  login.replaceWith(flowers.login);
+  const living = flowerMark("empty-flower");
+  empty.replaceWith(living);
+  // It rests when it is not seen, while the person types, and while a sheet covers the chat.
+  flowers.life = alive(living, () => {
+    const holder = $("empty");
+    return !document.hidden && !$("chat").hidden && !holder.hidden && !isLeaving(holder) && !holder.classList.contains("typing") && !document.querySelector("dialog[open]");
+  });
+  watchDialogs(() => { hostToast(); checkFlower(); });
+}
+
+function checkFlower() {
+  flowers.life?.check();
+}
+
+/** The field is as tall as what is typed (to 40% of the screen), and goes from one height to the next on the app's resize spring. */
+function autoGrow(animate = true) {
   const input = $("input");
+  const from = input.offsetHeight;
+  for (const running of input.getAnimations?.() ?? []) running.cancel();
   input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+  const to = Math.min(input.scrollHeight, Math.round((window.visualViewport?.height ?? window.innerHeight) * 0.4));
+  input.style.height = `${to}px`;
+  if (animate && from && Math.abs(to - from) > 1 && !$("chat").hidden) move(input, [{ height: `${from}px` }, { height: `${to}px` }], { ms: 330, curve: "--resize" });
 }
 
 async function sendFromComposer() {
@@ -1228,6 +1379,8 @@ async function sendFromComposer() {
   if (state.status && !state.status.available) { updateBanner(); return; }
   input.value = "";
   autoGrow();
+  // On a phone the keyboard goes away as the message is sent, and the reply has the screen (as in the app).
+  if (matchMedia("(pointer: coarse)").matches) input.blur();
   const message = { role: "user", text };
   if (state.draft.length) {
     message.attachments = state.draft;
@@ -1236,8 +1389,11 @@ async function sendFromComposer() {
   }
   state.chat.messages.push(message);
   state.chat.updatedAt = Date.now();
-  $("messages").append(messageElement(message));
-  $("empty").hidden = true;
+  // The bubble rises out of the bar it was written in, and the empty chat's flower goes.
+  const sent = messageElement(message);
+  sent.classList.add("fresh");
+  $("messages").append(sent);
+  present($("empty"), false);
   saveChat();
   setLastOpen(state.chat.id);
   renderHistory();
@@ -1374,6 +1530,15 @@ function beginRun(message, element, chat, known = 0, controller = new AbortContr
       }
       if (pacer.shown < run.known) { pacer.shown = run.known; pacer.carry = 0; }
     }
+    if (thinking.isConnected && pacer.text.length > 0) {
+      // The first words are ready: the light shrinks to nothing, and they come where it was.
+      if (!isLeaving(thinking)) dismiss(thinking);
+      if (thinking.isConnected && !force) {
+        pacer.lastTick = now / 1000;
+        run.frame = requestAnimationFrame(() => run.render());
+        return;
+      }
+    }
     const shown = pacer.advance(now / 1000);
     // About 24 steps a second, fewer as a reply grows very long (the app's ReplyPacer.interval).
     const interval = 1000 / 24 + Math.min(pacer.text.length / 16000, 1) * (100 - 1000 / 24);
@@ -1382,8 +1547,8 @@ function beginRun(message, element, chat, known = 0, controller = new AbortContr
       entry.view.update(pacer.text.slice(0, shown), { live: !pacer.finished, animate: true });
       run.rendered = shown;
       run.lastRender = now;
-      if (shown > 0 && thinking.isConnected) thinking.remove();
-      if (wasPinned) scrollToEnd(false);
+      if (shown > 0) thinking.remove();
+      if (wasPinned && !finger.touching) scrollToEnd(false);
     }
     if (run.ended && pacer.finished) { run.finish(); return; }
     run.frame = requestAnimationFrame(() => run.render());
@@ -1405,12 +1570,16 @@ function beginRun(message, element, chat, known = 0, controller = new AbortContr
     message.activity = null;
     for (const file of message.files ?? []) file.madeAt ??= Date.now();
     state.streaming = null;
-    finishElement(message);
+    finishElement(message, true);
+    // Spoken only (the reply itself is not read out letter by letter): it has come.
+    const said = $("announce");
+    said.textContent = "";
+    if (!message.error && message.text && chat === state.chat) requestAnimationFrame(() => { said.textContent = "返信が届きました"; });
     if (message.files?.length) loadFileInfo(message, chat);
     saveChat(chat);
     updateComposer();
     renderHistory();
-    if (isPinned(160)) scrollToEnd(false);
+    if (isPinned(160) && !finger.touching) scrollToEnd(false);
     refreshStatus();
   };
 
@@ -1431,6 +1600,7 @@ async function ask() {
   const message = { role: "assistant", text: "", model: model.id, effort, end: "streaming", ...(tools ? { search: null, files: [] } : {}), ...(turns.dropped ? { trimmed: turns.dropped } : {}) };
   state.chat.messages.push(message);
   const element = messageElement(message);
+  element.classList.add("fresh");
   $("messages").append(element);
   scrollToEnd(true);
   const run = beginRun(message, element, state.chat);
@@ -1711,15 +1881,47 @@ function scrollToEnd(smooth) {
   scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
 }
 
+/** A finger on the conversation: the page never moves it from under the finger (Safari would stutter, or drop the gesture). */
+const finger = { touching: false };
+
 function wireScroller() {
   const scroller = $("scroller");
+  let pinned = true;
+  let atEnd = false;
+  let from = 0;
+  scroller.addEventListener("touchstart", () => { finger.touching = true; atEnd = isPinned(); from = scroller.scrollTop; }, { passive: true });
+  const lifted = (event) => {
+    finger.touching = event.touches.length > 0;
+    // What came under a resting finger is caught up with; a reader who moved up is left there.
+    if (!finger.touching && atEnd && state.streaming && scroller.scrollTop >= from - 8) scrollToEnd(false);
+  };
+  scroller.addEventListener("touchend", lifted, { passive: true });
+  scroller.addEventListener("touchcancel", lifted, { passive: true });
   const update = () => {
+    pinned = isPinned();
     $("chat").classList.toggle("scrolled", scroller.scrollTop > 4);
-    $("jump").hidden = isPinned(200);
+    present($("jump"), !isPinned(200));
   };
   scroller.addEventListener("scroll", update, { passive: true });
   new ResizeObserver(update).observe($("messages"));
+  // What stands under the conversation grew or shrank (more lines typed, attachments, a notice, the keyboard):
+  // a conversation that was at its end stays at its end.
+  new ResizeObserver(() => { if (pinned) scrollToEnd(false); update(); }).observe(scroller);
   $("jump").addEventListener("click", () => scrollToEnd(true));
+  // The top bar and the field lie over the conversation: a wheel turned there turns the conversation.
+  const turn = (event) => {
+    if (event.ctrlKey || !event.deltaY || event.target.closest(".tray, .attach-menu")) return;
+    const field = event.target.closest("textarea");
+    if (field && field.scrollHeight > field.clientHeight + 1) return;
+    scroller.scrollTop += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1);
+  };
+  for (const part of [document.querySelector(".topbar"), document.querySelector(".composer-area")]) part?.addEventListener("wheel", turn, { passive: true });
+  // Page Up and Page Down read back from the field, with the caret staying in it.
+  $("input").addEventListener("keydown", (event) => {
+    if ((event.key !== "PageUp" && event.key !== "PageDown") || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    scroller.scrollBy({ top: (event.key === "PageUp" ? -1 : 1) * scroller.clientHeight * 0.85, behavior: still() ? "auto" : "smooth" });
+  });
 }
 
 /** iPhone Safari's keyboard: the chat follows the visible area, so the composer stays above it. */
@@ -1728,10 +1930,14 @@ function wireViewport() {
   if (!viewport) return;
   const chat = $("chat");
   const update = () => {
+    // Zoomed in with two fingers: the visible area is smaller, but no keyboard came.
+    if (Math.abs((viewport.scale ?? 1) - 1) > 0.01) return;
     const keyboard = window.innerHeight - viewport.height > 120;
     // The list's search on a phone: the list follows the keyboard, the chat beside it stays where it is (as on the iPhone).
     const listOnly = keyboard && drawer.open && !wide.matches;
     chat.classList.toggle("keyboard", keyboard && !listOnly);
+    // What floats over the page (the toast) follows the visible area too.
+    document.documentElement.style.setProperty("--vv-top", keyboard ? `${viewport.offsetTop}px` : "0px");
     $("chat-panel").style.height = listOnly ? `${window.innerHeight}px` : "";
     if (keyboard) {
       chat.style.height = `${viewport.height}px`;
@@ -1747,31 +1953,53 @@ function wireViewport() {
 
 // MARK: The model sheet
 
+/** The rows stay while the sheet is open: a choice only moves the check (and the keyboard keeps its place). */
 function renderModelSheet() {
   const { model: current, effort: currentEffort } = choice();
+  const models = catalog();
+  const pick = (change) => { change(); savePrefs(); renderModelSheet(); renderTopbar(); };
+  const check = () => h("span", { class: "check", "aria-hidden": "true" });
   const list = $("model-list");
-  list.replaceChildren(...catalog().map((model) => {
+  const rows = models.map((model) => `${model.id}:${model.name}`).join("\n");
+  if (list.dataset.rows !== rows) {
+    list.dataset.rows = rows;
+    list.replaceChildren(...models.map((model) => h("button", {
+      type: "button", class: "choice", role: "radio",
+      onclick: () => pick(() => { state.prefs.model = model.id; }),
+    }, h("span", { class: "body" }, h("span", { class: "title" }, model.name), h("span", { class: "sub" })), check())));
+  }
+  models.forEach((model, index) => {
+    const row = list.children[index];
     const level = model.id === current.id ? currentEffort
       : (model.efforts.includes(state.prefs.efforts[model.id]) ? state.prefs.efforts[model.id] : startEffort(model));
     const sub = model.available === false ? "今は Anthropic で使えません"
       : `推論レベル ${EFFORT[level]?.title ?? level}${model.available === null ? " · 使えるか未確認" : ""}`;
-    return h("button", {
-      type: "button", class: "choice", role: "radio", "aria-checked": model.id === current.id ? "true" : "false",
-      disabled: !usable(model),
-      onclick: () => { state.prefs.model = model.id; savePrefs(); renderModelSheet(); renderTopbar(); },
-    }, h("span", { class: "body" }, h("span", { class: "title" }, model.name), h("span", { class: "sub", text: sub })), h("span", { class: "check", "aria-hidden": "true" }));
-  }));
+    row.setAttribute("aria-checked", model.id === current.id ? "true" : "false");
+    row.disabled = !usable(model);
+    const line = row.querySelector(".sub");
+    if (line.textContent !== sub) line.textContent = sub;
+  });
   const efforts = $("effort-list");
-  efforts.replaceChildren(...EFFORTS.map((level) => {
+  if (!efforts.children.length) {
+    efforts.replaceChildren(...EFFORTS.map((level) => h("button", {
+      type: "button", class: "choice", role: "radio",
+      onclick: () => pick(() => { state.prefs.efforts[choice().model.id] = level; }),
+    }, h("span", { class: "body" }, h("span", { class: "title" }, EFFORT[level].title)), check())));
+  }
+  EFFORTS.forEach((level, index) => {
+    const row = efforts.children[index];
     const offered = current.efforts.includes(level);
-    const title = h("span", { class: "title" }, EFFORT[level].title,
-      startEffort(current) === level ? h("span", { class: "tag", text: "標準" }) : null);
-    return h("button", {
-      type: "button", class: "choice", role: "radio", "aria-checked": level === currentEffort ? "true" : "false",
-      disabled: !offered,
-      onclick: () => { state.prefs.efforts[current.id] = level; savePrefs(); renderModelSheet(); renderTopbar(); },
-    }, h("span", { class: "body" }, title, offered ? null : h("span", { class: "sub", text: "このモデルでは使えません" })), h("span", { class: "check", "aria-hidden": "true" }));
-  }));
+    row.setAttribute("aria-checked", level === currentEffort ? "true" : "false");
+    row.disabled = !offered;
+    // 標準 beside the model's own level, and a line under one it does not take.
+    const tag = row.querySelector(".tag");
+    if (startEffort(current) !== level) tag?.remove();
+    else if (!tag) row.querySelector(".title").append(h("span", { class: "tag", text: "標準" }));
+    const line = row.querySelector(".sub");
+    if (offered) line?.remove();
+    else if (!line) row.querySelector(".body").append(h("span", { class: "sub", text: "このモデルでは使えません" }));
+  });
+  for (const group of [list, efforts]) oneTabStop(group, ".choice", (row) => row.getAttribute("aria-checked") === "true");
 }
 
 // MARK: The credit left
@@ -1835,7 +2063,7 @@ function renderCreditSheet() {
 }
 
 function creditControls(credit) {
-  const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "例：25.00", "aria-label": "Console に出ている残高（米ドル）" });
+  const amount = h("input", { type: "text", inputmode: "decimal", enterkeyhint: "done", placeholder: "例：25.00", "aria-label": "Console に出ている残高（米ドル）" });
   const save = h("button", {
     type: "button", class: "secondary", text: "保存",
     onclick: async () => {
@@ -1845,6 +2073,7 @@ function creditControls(credit) {
       if (done) { await refreshStatus(); renderCreditSheet(); toast("残高を保存しました"); }
     },
   });
+  enterPresses(amount, save);
   const friends = h("input", { type: "checkbox", class: "switch", role: "switch", "aria-label": "友人にも残りを表示", checked: credit?.friends ? true : null });
   friends.addEventListener("change", async () => {
     const done = await adminCall("/admin/settings", { method: "POST", body: { creditFriends: friends.checked } });
@@ -1917,9 +2146,14 @@ async function renderSettings() {
   items.push(h("div", { class: "card" },
     h("p", { text: "メッセージと添付は中継サーバー（Cloudflare）を通って Anthropic に送られ、外部 AI の Claude が答えます。" }),
     h("p", { class: "muted", text: "中継サーバーは会話を保存しません。Anthropic は API の利用データを一定期間保持します。" })));
-  items.push(...await historySection());
-  if ((status?.role ?? me?.role) === "developer") items.push(...await developerSection());
-  body.replaceChildren(...items);
+  // Opened just now: what needs no waiting shows at once, and the rest comes in under it.
+  const opening = body.dataset.opening === "1";
+  delete body.dataset.opening;
+  if (opening) body.replaceChildren(...items);
+  const rest = [...await historySection()];
+  if ((status?.role ?? me?.role) === "developer") rest.push(...await developerSection());
+  if (opening) for (const item of rest) item.classList.add("arriving");
+  body.replaceChildren(...items, ...rest);
 }
 
 /** 設定 › 会話履歴: where it is kept, and deleting it all. */
@@ -1994,7 +2228,7 @@ async function developerSection() {
   // The credit left.
   section.push(h("div", { class: "card" },
     h("p", { text: adminState.credit ? `クレジットの残り：推定 ${Math.round(adminState.credit.percent)}%（約 ${formatUSD(adminState.credit.remainingUSD)}）` : "クレジットの残りは未入力です。" }),
-    h("div", { class: "row-actions" }, h("button", { type: "button", class: "secondary", text: "残高を入力・変更", onclick: () => { $("settings-sheet").close(); openSheet("credit-sheet"); } }))));
+    h("div", { class: "row-actions" }, h("button", { type: "button", class: "secondary", text: "残高を入力・変更", onclick: () => { closeDialog($("settings-sheet")); openSheet("credit-sheet"); } }))));
   // Friends.
   const friendsSwitch = h("input", { type: "checkbox", class: "switch", role: "switch", "aria-label": "友人の利用", checked: settings.friendsEnabled ? true : null });
   friendsSwitch.addEventListener("change", async () => {
@@ -2014,11 +2248,10 @@ async function developerSection() {
   section.push(h("div", { class: "card" },
     h("div", { class: "switch-row" }, h("span", { text: "友人の利用" }), friendsSwitch)));
   // Invites.
-  const name = h("input", { type: "text", maxlength: "40", placeholder: "招待する人の名前", "aria-label": "招待する人の名前" });
+  const name = h("input", { type: "text", maxlength: "40", enterkeyhint: "done", placeholder: "招待する人の名前", "aria-label": "招待する人の名前" });
   const role = h("select", { "aria-label": "役割", class: "role-select" }, h("option", { value: "friend", text: "友人" }), h("option", { value: "developer", text: "開発者" }));
   const made = h("div");
-  section.push(h("div", { class: "card" },
-    h("div", { class: "inline-field" }, name, role, h("button", {
+  const make = h("button", {
       type: "button", class: "secondary", text: "作る",
       onclick: async () => {
         if (!name.value.trim()) { toast("名前を入れてください"); return; }
@@ -2033,7 +2266,10 @@ async function developerSection() {
             h("button", { type: "button", class: "secondary", text: "コードをコピー", onclick: async () => toast((await copyText(result.code)) ? "コピーしました" : "コピーできません") }),
             h("button", { type: "button", class: "secondary", text: "リンクをコピー", onclick: async () => toast((await copyText(link)) ? "コピーしました" : "コピーできません") })));
       },
-    })),
+    });
+  enterPresses(name, make);
+  section.push(h("div", { class: "card" },
+    h("div", { class: "inline-field" }, name, role, make),
     made,
     invites.length ? h("div", { class: "people" }, invites.map((invite) => h("div", { class: "person" },
       h("span", { class: "name", text: `${invite.name}（${invite.role === "developer" ? "開発者" : "友人"}）` }),
@@ -2071,7 +2307,7 @@ async function logout() {
   clearDraft();
   if (token) stopped.finally(() => call("/web/logout", { method: "POST", body: {}, token }).catch(() => {}));
   closeSheets();
-  showLogin("main", "ログアウトしました。");
+  showLogin("main", "ログアウトしました。", "note");
 }
 
 async function leave() {
@@ -2100,7 +2336,7 @@ async function leave() {
   forgetChat();
   clearDraft();
   closeSheets();
-  showLogin("main", "登録を解除しました。");
+  showLogin("main", "登録を解除しました。", "note");
 }
 
 // MARK: 会話一覧 (the iPhone app's history)
@@ -2312,7 +2548,7 @@ async function followOtherTab(change) {
     clearDraft();
     $("input").value = "";
     closeSheets();
-    showLogin("main", "登録を解除しました。");
+    showLogin("main", "登録を解除しました。", "note");
     return;
   }
   drawer.texts = null;
@@ -2581,6 +2817,8 @@ async function drawHistory(ticket) {
       return h("li", {}, row);
     }));
     list.dataset.shape = shape;
+    // Tab stops once in the list (on the open conversation); the arrows walk it.
+    oneTabStop(list, ".history-row", (row) => row.getAttribute("aria-current") === "true");
     if (focused) [...list.querySelectorAll(".history-row")].find((row) => row.dataset.id === focused)?.focus({ preventScroll: true });
   }
   empty.hidden = items.length > 0;
@@ -2603,8 +2841,10 @@ const drawerWidth = () => $("history").getBoundingClientRect().width || 300;
 let drawerSettle = 0;
 
 /** Opens or closes the list on a phone (the chat slides aside, 92 px of it left); on a wide screen, shows it beside the chat or not. */
-function setDrawer(open, { animate = true, focus = true } = {}) {
+function setDrawer(open, { animate = true, focus = true, ms = 400 } = {}) {
   const chat = $("chat");
+  // How long it takes to settle: 0.4 s from a button, less when a flick has little left to travel.
+  chat.style.setProperty("--drawer-ms", `${Math.round(ms)}ms`);
   if (wide.matches) {
     if (state.prefs.historyDocked !== open) {
       state.prefs.historyDocked = open;
@@ -2640,11 +2880,11 @@ function setDrawer(open, { animate = true, focus = true } = {}) {
     closeRowMenu();
     endSearch();
     const done = () => { if (!drawer.open) chat.classList.remove("history-shown", "history-animating"); };
-    if (animate) drawerSettle = setTimeout(done, matchMedia("(prefers-reduced-motion: reduce)").matches ? 160 : 420);
+    if (animate) drawerSettle = setTimeout(done, still() ? 160 : ms + 20);
     else done();
     if (focus && wasOpen && (hadFocus || document.activeElement === document.body)) $("history-button").focus({ preventScroll: true });
   } else {
-    drawerSettle = setTimeout(() => chat.classList.remove("history-animating"), 420);
+    drawerSettle = setTimeout(() => chat.classList.remove("history-animating"), ms + 20);
     if (focus) {
       drawn.then(() => {
         if (!drawer.open || history.contains(document.activeElement)) return;
@@ -2718,10 +2958,15 @@ function openRowMenu(row) {
   const menu = $("history-menu");
   const box = $("history").getBoundingClientRect();
   const at = row.getBoundingClientRect();
+  drawer.menuFor?.classList.remove("menu-open");
   drawer.menuFor = row;
-  menu.hidden = false;
+  // The row it belongs to stays marked while it is open.
+  row.classList.add("menu-open");
+  present(menu, true);
   const below = at.bottom - box.top + 6;
   const top = below + menu.offsetHeight > box.height - 8 ? at.top - box.top - menu.offsetHeight - 6 : below;
+  // It grows out of its row: from its top edge under the row, from its bottom edge above it.
+  menu.style.transformOrigin = top === below ? "" : "24px 100%";
   menu.style.top = `${Math.max(8, top)}px`;
   menu.style.left = `${Math.max(8, at.left - box.left)}px`;
   $("history-delete").focus({ preventScroll: true });
@@ -2729,10 +2974,11 @@ function openRowMenu(row) {
 
 function closeRowMenu() {
   const menu = $("history-menu");
-  if (menu.hidden) return;
-  menu.hidden = true;
+  if (menu.hidden || isLeaving(menu)) return;
+  present(menu, false);
   const row = drawer.menuFor;
   drawer.menuFor = null;
+  row?.classList.remove("menu-open");
   if (row?.isConnected && $("history").contains(document.activeElement)) row.focus({ preventScroll: true });
 }
 
@@ -2749,8 +2995,19 @@ function wireHistory() {
     renderHistory();
   });
   $("history-query").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); event.target.blur(); }
+    // (Enter and Escape that belong to a Japanese conversion are the keyboard's own.)
+    if (event.isComposing || event.keyCode === 229) return;
+    const first = list.querySelector(".history-row:not(:disabled)");
+    if (event.key === "Enter") {
+      event.preventDefault();
+      // With a keyboard, on to what was found; on a phone, the keyboard goes away.
+      if (first && !matchMedia("(pointer: coarse)").matches) first.focus(); else event.target.blur();
+    } else if (event.key === "ArrowDown" && first) {
+      event.preventDefault();
+      first.focus();
+    }
   });
+  walkWithArrows(list, ".history-row");
   $("history-scroll").addEventListener("scroll", () => { closeRowMenu(); if (document.activeElement === $("history-query")) $("history-query").blur(); }, { passive: true });
 
   // A row: a tap opens it; a long press (or the right button, or the menu key) opens its menu.
@@ -2794,11 +3051,11 @@ function wireHistory() {
     if (row) deleteChat(row.dataset.id, row.textContent);
   });
   document.addEventListener("pointerdown", (event) => {
-    if (!$("history-menu").hidden && !$("history-menu").contains(event.target)) closeRowMenu();
+    if (!$("history-menu").hidden && !isLeaving($("history-menu")) && !$("history-menu").contains(event.target)) closeRowMenu();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
-    if (!$("history-menu").hidden) { event.preventDefault(); closeRowMenu(); return; }
+    if (event.key !== "Escape" || event.isComposing || event.keyCode === 229 || document.querySelector("dialog[open]")) return;
+    if (!$("history-menu").hidden && !isLeaving($("history-menu"))) { event.preventDefault(); closeRowMenu(); return; }
     if (drawer.searching && $("history").contains(document.activeElement)) { event.preventDefault(); endSearch(); $("history-search-button").focus(); return; }
     if (drawer.open) { event.preventDefault(); setDrawer(false); }
   });
@@ -2848,8 +3105,12 @@ function wireHistory() {
     // Where it would come to rest in 0.2 s at this speed.
     const projected = reveal() + (event.type === "pointercancel" ? 0 : (ended.speed * 200) / drawerWidth());
     const open = projected > 0.5;
-    if (open !== drawer.open) setDrawer(open);
-    else setDrawer(open, { focus: false });
+    // It leaves the finger at the finger's speed (2.25: how fast the settling curve starts), so a flick is not braked.
+    const left = Math.abs((open ? 1 : 0) - reveal()) * drawerWidth();
+    const speed = Math.abs(ended.speed);
+    const ms = speed > 0.3 ? Math.min(400, Math.max(160, (2.25 * left) / speed)) : 400;
+    if (open !== drawer.open) setDrawer(open, { ms });
+    else setDrawer(open, { focus: false, ms });
   };
   chat.addEventListener("pointerup", letGo);
   chat.addEventListener("pointercancel", letGo);
@@ -2861,26 +3122,113 @@ function wireHistory() {
 
 // MARK: Sheets
 
+/**
+ * Up, Down, Home and End walk the rows of a list, a menu or a group of
+ * choices, as a keyboard expects of them. `choose` also picks the row walked
+ * to (a group of radio buttons).
+ */
+function walkWithArrows(holder, rows, { choose = false } = {}) {
+  holder.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const all = [...holder.querySelectorAll(rows)].filter((row) => !row.disabled && !row.hidden);
+    const at = all.indexOf(document.activeElement.closest?.(rows));
+    if (at < 0 || !all.length) return;
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    const next = all[Math.max(0, Math.min(all.length - 1, to))];
+    if (next === all[at]) return;
+    next.focus();
+    if (choose) next.click();
+  });
+}
+
+/** Enter in a field that stands beside its button presses that button (not while Japanese is being converted). */
+function enterPresses(field, button) {
+  field.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!button.disabled) button.click();
+  });
+}
+
+/** One row of a group takes Tab (the chosen one); the arrows reach the others. */
+function oneTabStop(holder, rows, chosen) {
+  const all = [...holder.querySelectorAll(rows)];
+  const stop = all.find((row) => chosen(row) && !row.disabled) ?? all.find((row) => !row.disabled);
+  for (const row of all) row.tabIndex = row === stop ? 0 : -1;
+}
+
 function openSheet(id) {
   if (id === "model-sheet") renderModelSheet();
   if (id === "credit-sheet") renderCreditSheet();
   if (id === "settings-sheet") {
-    $("settings-body").replaceChildren(h("p", { class: "section-foot", text: "読み込んでいます…" }));
+    $("settings-body").replaceChildren();
+    $("settings-body").dataset.opening = "1";
+    $("settings-body").scrollTop = 0;
     renderSettings();
   }
-  $(id).showModal();
+  openDialog($(id));
 }
 
+/** Every sheet and alert shut at once, with no motion: the person is signed out, and the sign-in screen shows. */
 function closeSheets() {
-  for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+  for (const dialog of document.querySelectorAll("dialog[open]")) closeDialogNow(dialog);
+}
+
+/**
+ * On a phone a sheet follows a finger that pulls its head down, and goes if
+ * it is let go far enough or fast enough; otherwise it comes back (iOS's sheets).
+ */
+function wireSheetPull(dialog) {
+  const head = dialog.querySelector(".sheet-head");
+  const phone = matchMedia("(max-width: 699px)");
+  let pull = null;
+  head.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch" || !phone.matches || pull || isLeaving(dialog) || event.target.closest("button")) return;
+    pull = { id: event.pointerId, y: event.clientY, by: 0, lastY: event.clientY, lastT: event.timeStamp, speed: 0 };
+    for (const running of dialog.getAnimations?.() ?? []) running.finish();
+    try { head.setPointerCapture(event.pointerId); } catch { /* the finger is already gone */ }
+  });
+  head.addEventListener("pointermove", (event) => {
+    if (!pull || event.pointerId !== pull.id) return;
+    const elapsed = event.timeStamp - pull.lastT;
+    if (elapsed > 0) pull.speed = 0.7 * ((event.clientY - pull.lastY) / elapsed) + 0.3 * pull.speed;
+    pull.lastY = event.clientY;
+    pull.lastT = event.timeStamp;
+    pull.by = Math.max(0, event.clientY - pull.y);
+    dialog.style.transform = pull.by ? `translateY(${pull.by}px)` : "";
+  });
+  const letGo = (event) => {
+    if (!pull || event.pointerId !== pull.id) return;
+    const ended = pull;
+    pull = null;
+    if (event.type === "pointerup" && ended.by > 0 && (ended.by > dialog.offsetHeight * 0.3 || ended.speed > 0.5)) {
+      // Down from where the finger left it.
+      closeDialog(dialog).then(() => { dialog.style.transform = ""; });
+      return;
+    }
+    dialog.style.transform = "";
+    if (ended.by) move(dialog, [{ transform: `translateY(${ended.by}px)` }, { transform: "none" }], { ms: 360, curve: "--menu-close" });
+  };
+  head.addEventListener("pointerup", letGo);
+  head.addEventListener("pointercancel", letGo);
 }
 
 function wireSheets() {
   for (const dialog of document.querySelectorAll("dialog.sheet")) {
+    // A press that began inside (text being selected) and ended on the dimmed page is not a tap on it.
+    let outside = false;
+    dialog.addEventListener("pointerdown", (event) => { outside = event.target === dialog; });
     dialog.addEventListener("click", (event) => {
-      if (event.target === dialog || event.target.closest("[data-close]")) dialog.close();
+      if (event.target.closest("[data-close]") || (event.target === dialog && outside)) closeDialog(dialog);
+      outside = false;
     });
+    // Escape (and Android's back): the sheet goes down as it does for 完了.
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeDialog(dialog); });
+    wireSheetPull(dialog);
   }
+  for (const group of [$("model-list"), $("effort-list")]) walkWithArrows(group, ".choice", { choose: true });
   $("model-button").addEventListener("click", () => openSheet("model-sheet"));
   $("settings-button").addEventListener("click", () => openSheet("settings-sheet"));
   $("credit").addEventListener("click", () => openSheet("credit-sheet"));
@@ -2903,6 +3251,21 @@ function wireComposer() {
     event.preventDefault();
     sendFromComposer();
   });
+  // The field made narrower or wider (a window resized, a phone turned): its lines wrap anew, and it is as tall as they are.
+  let width = 0;
+  new ResizeObserver(([entry]) => {
+    const now = Math.round(entry.contentRect.width);
+    if (now === width) return;
+    const first = !width;
+    width = now;
+    if (!first) autoGrow(false);
+  }).observe(input);
+  // A press on the field's rim is a press on the field.
+  $("composer").addEventListener("pointerdown", (event) => {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    input.focus();
+  });
 }
 
 function start() {
@@ -2910,6 +3273,7 @@ function start() {
     showLogin("main", "このページの組み立てが途中です（中継サーバーのアドレスがありません）。");
     return;
   }
+  plantFlowers();
   wireLogin();
   wireComposer();
   wireAttachments();
@@ -2918,6 +3282,15 @@ function start() {
   wireScroller();
   wireViewport();
   attachReplyActions($("messages"));
+  // With a mouse, a button that is only a symbol says its short name when the pointer rests on it.
+  if (matchMedia("(hover: hover)").matches) {
+    document.addEventListener("pointerover", (event) => {
+      const button = event.target.closest?.("button[aria-label]");
+      if (!button || button.textContent.trim()) return;
+      const name = button.getAttribute("aria-label");
+      if (button.title !== name) button.title = name;
+    }, { passive: true });
+  }
   addEventListener("online", () => { updateBanner(); retryHistory(); });
   addEventListener("offline", updateBanner);
   // Safari may stop the page in the background: what waits is written first, a reply's text so far with it.
@@ -2933,6 +3306,8 @@ function start() {
   });
   const invited = readInviteLink();
   if (session.get() && !invited) {
+    // The flower stands for the page until the relay has said who this is.
+    $("splash").hidden = false;
     enterChat().catch(() => showLogin("main"));
   } else {
     showLogin(invited ? "invite" : "main");

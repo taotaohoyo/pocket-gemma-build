@@ -6,6 +6,7 @@
 // is not a pass against the real Claude API.
 //
 //   node test/e2e.mjs            (PEOPLE_SHOTS=dir also saves 2x screenshots for people)
+//   STUDIO=dir node test/e2e.mjs (no checks: every screen and each motion as pictures, test/studio.mjs)
 
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
@@ -364,6 +365,15 @@ async function watch(page) {
   return errors;
 }
 
+/** A sheet or an alert goes with a motion: what comes next waits until it has gone. */
+const settled = (page) => page.waitForFunction(() => !document.querySelector("dialog.closing"));
+/** True once the page shows `selector` `count` times (what leaves goes with a motion, so not at once). */
+const becomes = (page, selector, count, timeout = 3000) =>
+  page.waitForFunction(([s, n]) => document.querySelectorAll(s).length === n, [selector, count], { timeout }).then(() => true, () => false);
+/** True once `selector` is out of sight (or in sight, with `shown`). */
+const goes = (page, selector, shown = false, timeout = 3000) =>
+  page.waitForSelector(selector, { state: shown ? "visible" : "hidden", timeout }).then(() => true, () => false);
+
 async function sendMessage(page, text) {
   await page.fill("#input", text);
   await page.click("#send");
@@ -390,6 +400,25 @@ async function swipe(page, from, to, steps = 12) {
 
 // A UTF-8 locale, as people's phones and PCs have: under Linux's plain C locale Chromium saves 週末の予定.csv as "download".
 const browser = await chromium.launch({ env: { ...process.env, LANG: "C.UTF-8", LC_ALL: "C.UTF-8" } });
+// STUDIO=dir: no checks; the screens and their motion, as pictures to look at (test/studio.mjs).
+if (process.env.STUDIO) {
+  let failed = false;
+  try {
+    const { default: studio } = await import(process.env.STUDIO_SCRIPT ?? "./studio.mjs");
+    await studio({ browser, page0, relay, admin: ADMIN, out: process.env.STUDIO, passkeyDevice, sendMessage, waitReply, swipe, sleep, cable });
+  } catch (error) {
+    failed = true;
+    console.error(error?.stack ?? error);
+  } finally {
+    await browser.close();
+    stopRelay();
+    web.close();
+    anthropic.close();
+    cable.cut();
+    cableServer.close();
+  }
+  process.exit(failed ? 1 : 0);
+}
 try {
   // MARK: Unsigned-in
   const iphone = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Mobile/15E148 Safari/604.1" };
@@ -538,9 +567,25 @@ try {
   await dev.locator("#model-list .choice").nth(1).click();
   const fable = await dev.evaluate(() => Array.from(document.querySelectorAll("#effort-list .choice")).map((b) => b.disabled));
   check("a level the model doesn't take can't be chosen (Fable 5.2 at 超高)", fable[3] === true && fable[0] === false);
-  await dev.locator("#model-list .choice").nth(2).click();
+  // With a keyboard: Down walks to the next model and chooses it, the keyboard stays on the row, and the list is one Tab stop.
+  await dev.locator("#model-list .choice").nth(1).focus();
+  await dev.keyboard.press("ArrowDown");
+  const walked = await dev.evaluate(() => {
+    const rows = [...document.querySelectorAll("#model-list .choice")];
+    return { at: rows.indexOf(document.activeElement), checked: rows.findIndex((row) => row.getAttribute("aria-checked") === "true"), stops: rows.filter((row) => row.tabIndex === 0).length };
+  });
+  check("the arrow keys walk the models and choose; the keyboard stays on the row", walked.at === 2 && walked.checked === 2 && walked.stops === 1, JSON.stringify(walked));
   await dev.locator("#effort-list .choice").nth(0).click();
+  // A press that began in the sheet (selecting text) and ended on the dimmed page doesn't close it; a tap on the dimmed page does.
+  const sheetBox = await dev.locator("#model-sheet").boundingBox();
+  await dev.mouse.move(sheetBox.x + 60, sheetBox.y + 40);
+  await dev.mouse.down();
+  await dev.mouse.move(sheetBox.x + 60, sheetBox.y - 30, { steps: 4 });
+  await dev.mouse.up();
+  await sleep(450);
+  check("a drag that ends outside a sheet doesn't close it", await dev.evaluate(() => document.getElementById("model-sheet").open));
   await dev.click("#model-sheet [data-close]");
+  await settled(dev);
   check("the top bar follows the choice", (await dev.textContent("#model-name")) === "Claude Sonnet 5.5" && (await dev.textContent("#model-sub")).includes("低"));
 
   // MARK: The credit left
@@ -555,6 +600,7 @@ try {
   await dev.waitForSelector("#credit:not([hidden])");
   check("the ring shows once the balance is entered", (await dev.textContent("#credit-text")) === "100");
   await dev.click("#credit-sheet [data-close]");
+  await settled(dev);
 
   await sendMessage(dev, "echo");
   await waitReply(dev);
@@ -719,7 +765,7 @@ try {
   check("the menu opens above the plus", await dev.isVisible("#attach-menu [data-pick=photos]"));
   await dev.screenshot({ path: join(SHOTS, "check-attach-menu.png") });
   await dev.keyboard.press("Escape");
-  check("the menu closes", await dev.isHidden("#attach-menu"));
+  check("the menu closes", await goes(dev, "#attach-menu"));
 
   await dev.setInputFiles("#pick-photos", [
     { name: "東京駅.jpg", mimeType: "image/jpeg", buffer: located },
@@ -729,7 +775,7 @@ try {
   check("picked photos wait above the bar, each with its ×", await dev.locator("#tray .tray-remove").count() === 2);
   check("a photo alone can be sent", !(await dev.isDisabled("#send")));
   await dev.locator("#tray .tray-remove").nth(1).click();
-  check("× takes one off", await dev.locator("#tray .tray-item").count() === 1);
+  check("× takes one off", await becomes(dev, "#tray .tray-item", 1));
   await dev.setInputFiles("#pick-files", [
     { name: "教材.pdf", mimeType: "application/pdf", buffer: pdfBytes },
     { name: "メモ.txt", mimeType: "text/plain", buffer: sjis },
@@ -737,7 +783,8 @@ try {
   await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item.file").length === 2, null, { timeout: 10000 });
   await dev.setInputFiles("#pick-videos", [{ name: "海.webm", mimeType: "video/webm", buffer: readFileSync(join(root, "test/fixtures/clip.webm")) }]);
   await dev.waitForFunction(() => document.querySelectorAll("#tray .tray-item.picture").length === 2, null, { timeout: 20000 });
-  check("a video waits as its first scene, marked to play", await dev.locator("#tray .tray-item .play").count() === 1);
+  check("a video waits as its first scene, marked to play", await dev.locator("#tray .tray-item .play").count() === 1,
+    await dev.evaluate(() => [...document.querySelectorAll("#tray .tray-item")].map((item) => `${item.className}:${item.title}`).join(" | ")));
   await dev.evaluate(() => {
     const data = new DataTransfer();
     data.items.add(new File(["dropped words"], "落とした.md", { type: "text/markdown" }));
@@ -794,6 +841,7 @@ try {
   await dev.waitForSelector("#viewer[open] img");
   check("a sent photo opens larger", (await dev.getAttribute("#viewer-body img", "src")).startsWith("data:image/jpeg;base64,"));
   await dev.click("#viewer [data-close]");
+  await settled(dev);
   await dev.locator(".msg.user .sent-picture").nth(0).scrollIntoViewIfNeeded();
   await dev.screenshot({ path: join(SHOTS, "check-attach-sent.png") });
 
@@ -898,7 +946,7 @@ try {
   const toolRows = await dev.evaluate(() => [...document.querySelectorAll("#attach-menu [data-tool]")].map((row) => `${row.dataset.tool}:${row.hidden ? "hidden" : "shown"}:${row.getAttribute("aria-checked")}`));
   check("the plus menu has ウェブ検索 and ファイル作成, both off", toolRows.join(",") === "webSearch:shown:false,files:shown:false", toolRows.join(","));
   await dev.click("#attach-menu [data-tool=webSearch]");
-  check("turned on, the menu closes and the 検索 pill shows by the plus", await dev.isHidden("#attach-menu") && (await dev.locator("#tool-pills .tool-pill").allTextContents()).join() === "検索");
+  check("turned on, the menu closes and the 検索 pill shows by the plus", await goes(dev, "#attach-menu") && (await dev.locator("#tool-pills .tool-pill").allTextContents()).join() === "検索");
   await dev.screenshot({ path: join(SHOTS, "check-tools-pill.png") });
   const spentBeforeSearch = await spent();
   const requestsBefore = upstream.requests.length;
@@ -934,7 +982,7 @@ try {
   check("a reply paused mid-research says how to go on", (await lastReply(dev).locator(".notice").textContent()).includes("「続けて」と送る"));
 
   await dev.click("#tool-pills .tool-pill");
-  check("the pill turns search off", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
+  check("the pill turns search off", await becomes(dev, "#tool-pills .tool-pill", 0));
   await dev.click("#attach");
   await dev.click("#attach-menu [data-tool=files]");
   check("ファイル作成 on: its pill shows", (await dev.locator("#tool-pills .tool-pill").allTextContents()).join() === "ファイル");
@@ -979,7 +1027,7 @@ try {
   const chatWithTools = await dev.evaluate(() => sessionStorage.getItem("fielua.chat"));
   check("after reloading, 情報源, the files and the switch are still there", afterReload.sources === 3 && afterReload.files === 4 && afterReload.pill === "ファイル", JSON.stringify(afterReload));
   await dev.click("#tool-pills .tool-pill");
-  check("all off: the next question goes without tools", (await dev.locator("#tool-pills .tool-pill").count()) === 0);
+  check("all off: the next question goes without tools", await becomes(dev, "#tool-pills .tool-pill", 0));
 
   // The list after a reload: both conversations, the latest question first; searching their text; opening and deleting.
   await dev.click("#history-button");
@@ -1007,6 +1055,7 @@ try {
   await dev.waitForSelector("#confirm[open]");
   check("deleting asks first, naming the conversation", (await dev.textContent("#confirm-title")) === "この会話を削除しますか？" && (await dev.textContent("#confirm-body")).includes("md"));
   await dev.click("#confirm-ok");
+  await settled(dev);
   await dev.waitForFunction(() => document.querySelectorAll(".history-row").length === 1, null, { timeout: 5000 });
   check("deleted, the open one gives way to a new chat and the list stays open",
     (await dev.locator(".msg").count()) === 0 && (await dev.evaluate(() => document.getElementById("chat").classList.contains("history-shown"))));
@@ -1034,6 +1083,7 @@ try {
     await tab2.click(".history-row[aria-current=true]", { button: "right" });
     await tab2.click("#history-delete");
     await tab2.click("#confirm-ok");
+    await settled(tab2);
     const gone = await dev.waitForFunction(() => document.querySelectorAll(".msg").length === 0, null, { timeout: 8000 }).then(() => true, () => false);
     check("deleted in one tab, it goes from the other too", gone);
     // A tab that missed it (its own copy still in the tab's storage) doesn't bring it back on a reload.
@@ -1080,6 +1130,7 @@ try {
   await dev.waitForSelector("#settings-sheet .link-out");
   const code = await dev.locator("#settings-sheet .link-out").first().textContent();
   await dev.click("#settings-sheet [data-close]");
+  await settled(dev);
 
   const friendContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
   const friend = await friendContext.newPage();
@@ -1088,7 +1139,8 @@ try {
   await friend.goto(`${page0}#invite=${code}`);
   await friend.waitForSelector("#login-invite:not([hidden])");
   check("an invite link opens the invite with its code, and the code leaves the address", (await friend.inputValue("#invite-code")) === code && !friend.url().includes(code));
-  await friend.click("#invite-register");
+  await friend.focus("#invite-code");
+  await friend.keyboard.press("Enter");
   await friend.waitForSelector("#chat:not([hidden])", { timeout: 15000 });
   check("the friend registers with a passkey", await friend.isVisible("#composer"));
   await friend.fill("#input", "こんにちは");
@@ -1110,8 +1162,10 @@ try {
   check("turning friends on asks to confirm Anthropic's terms first", await dev.isDisabled("#confirm-ok"));
   await dev.locator("#confirm input[type=checkbox]").check();
   await dev.click("#confirm-ok");
+  await settled(dev);
   await sleep(600);
   await dev.click("#settings-sheet [data-close]");
+  await settled(dev);
   await friend.reload();
   await friend.waitForSelector("#chat:not([hidden])");
   await friend.fill("#input", "こんにちは");
@@ -1152,6 +1206,7 @@ try {
   await friend.waitForSelector("#confirm[open]");
   check("登録を解除 says this device's history goes too", (await friend.textContent("#confirm-body")).includes("この端末の会話履歴も消えます"));
   await friend.click("#confirm-ok");
+  await settled(friend);
   await friend.waitForSelector("#login:not([hidden])");
   await sleep(300);
   const gone = await friend.evaluate(async () => (await indexedDB.databases()).filter((d) => d.name.startsWith("fielua-history-")).length);
@@ -1169,12 +1224,13 @@ try {
   check("out of credit: said plainly, nothing bought", (await lastReply(dev).locator(".notice").textContent()).includes("追加購入はしていません"));
   await dev.waitForFunction(() => document.getElementById("credit-text").textContent === "0", null, { timeout: 8000 });
   check("the ring shows 0% once Anthropic says the credit ran out", true);
-  check("sending waits until the developer resumes", !(await dev.isHidden("#banner")));
+  check("sending waits until the developer resumes", await goes(dev, "#banner", true));
   await dev.click("#settings-button");
   await dev.getByRole("button", { name: "再開する" }).click();
   await sleep(800);
   await dev.click("#settings-sheet [data-close]");
-  check("the developer resumes", await dev.isHidden("#banner"));
+  await settled(dev);
+  check("the developer resumes", await goes(dev, "#banner"));
 
   // MARK: Offline
   await devContext.setOffline(true);
@@ -1256,6 +1312,7 @@ try {
         await sleep(500);
         await page.screenshot({ path: join(PEOPLE, "iphone-model-sheet.png") });
         await page.click("#model-sheet [data-close]");
+        await settled(page);
         await page.click("#credit");
         await sleep(500);
         await page.screenshot({ path: join(PEOPLE, "iphone-credit.png") });

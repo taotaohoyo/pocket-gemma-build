@@ -22,6 +22,9 @@
 <body>
 <noscript><p class="noscript">Fielua を使うには JavaScript をオンにしてください。</p></noscript>
 
+<!-- Signed in already: the flower, until the relay has answered -->
+<div id="splash" class="splash" aria-hidden="true" hidden><img src="assets/flower.png" alt="" width="60" height="59"></div>
+
 <!-- Sign in: a passkey, or an invite, or the developer's first setup -->
 <main id="login" class="login" hidden>
   <div class="login-inner">
@@ -37,7 +40,7 @@
     <section id="login-invite" class="login-panel" hidden>
       <h2>招待コードで登録</h2>
       <label class="field"><span>招待コード</span>
-        <input id="invite-code" type="text" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40">
+        <input id="invite-code" type="text" enterkeyhint="go" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40">
       </label>
       <button type="button" id="invite-register" class="primary">パスキーを作って登録</button>
       <button type="button" class="text back">戻る</button>
@@ -50,10 +53,10 @@
         <output id="made-admin-key" class="made-key" hidden></output>
       </details>
       <label class="field"><span>管理キー（ADMIN_TOKEN）</span>
-        <input id="setup-admin-key" type="password" autocomplete="off" spellcheck="false">
+        <input id="setup-admin-key" type="password" enterkeyhint="go" autocomplete="off" spellcheck="false">
       </label>
       <label class="field"><span>名前</span>
-        <input id="setup-name" type="text" autocomplete="off" maxlength="40">
+        <input id="setup-name" type="text" enterkeyhint="go" autocomplete="off" maxlength="40">
       </label>
       <button type="button" id="setup-register" class="primary">パスキーを作って登録</button>
       <button type="button" class="text back">戻る</button>
@@ -102,7 +105,7 @@
   <div id="chat-panel" class="chat-panel">
   <header class="topbar">
     <button type="button" id="history-button" class="icon-button history-button" aria-label="会話一覧を開く" aria-controls="history" aria-expanded="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.2h15.2M4.5 14.8h9.6"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.6 7.9h16.8M3.6 16.1h9.8"/></svg>
     </button>
     <button type="button" id="model-button" class="model-button" aria-haspopup="dialog" aria-label="モデルと推論レベル">
       <span class="model-line"><svg class="cloud" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.2a4 4 0 0 0 .5-8A5.5 5.5 0 0 0 7.1 9a4.75 4.75 0 0 0-.1 9.5Z"/></svg><span id="model-name">Claude</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></span>
@@ -132,7 +135,7 @@
     <p id="tray-status" class="tray-status" role="status" hidden>添付を読み込んでいます…</p>
     <form id="composer" class="composer" autocomplete="off">
       <button type="button" id="attach" class="attach" aria-haspopup="menu" aria-expanded="false" aria-controls="attach-menu" aria-label="写真・動画・ファイルを添付">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg>
       </button>
       <div id="attach-menu" class="attach-menu" role="menu" aria-label="添付" hidden>
         <button type="button" role="menuitem" data-pick="photos"><span>写真</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5.5h12a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 18 18.5H6A2.5 2.5 0 0 1 3.5 16V8A2.5 2.5 0 0 1 6 5.5Z"/><path d="m4 16.5 4.5-4.5 3.5 3.5 2.5-2.5 5.5 5.5"/><path d="M15.5 9.5h.01"/></svg></button>
@@ -154,8 +157,8 @@
       </button>
       <textarea id="input" rows="1" placeholder="メッセージ" aria-label="メッセージ" enterkeyhint="send"></textarea>
       <button type="submit" id="send" class="send" aria-label="送信" disabled>
-        <svg class="up" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/></svg>
-        <svg class="stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/></svg>
+        <svg class="up" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V4.5M5 11.5l7-7 7 7"/></svg>
+        <svg class="stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
       </button>
     </form>
     <p class="disclosure">Anthropic の AI（Claude）が答えます。誤りを含むことがあります。</p>
@@ -168,7 +171,7 @@
 <dialog id="model-sheet" class="sheet" aria-labelledby="model-sheet-title">
   <div class="sheet-head">
     <h2 id="model-sheet-title">モデル</h2>
-    <button type="button" class="text close" data-close>完了</button>
+    <button type="button" class="glass-circle" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
   </div>
   <div class="sheet-body">
     <p class="section-label">外部AI · インターネット経由</p>
@@ -182,7 +185,7 @@
 <dialog id="settings-sheet" class="sheet" aria-labelledby="settings-title">
   <div class="sheet-head">
     <h2 id="settings-title">設定</h2>
-    <button type="button" class="text close" data-close>完了</button>
+    <button type="button" class="glass-circle" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
   </div>
   <div class="sheet-body" id="settings-body"></div>
 </dialog>
@@ -191,7 +194,7 @@
 <dialog id="credit-sheet" class="sheet small" aria-labelledby="credit-title">
   <div class="sheet-head">
     <h2 id="credit-title">クレジットの残り</h2>
-    <button type="button" class="text close" data-close>完了</button>
+    <button type="button" class="glass-circle" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
   </div>
   <div class="sheet-body" id="credit-body"></div>
 </dialog>
@@ -200,7 +203,7 @@
 <dialog id="viewer" class="sheet viewer" aria-labelledby="viewer-title">
   <div class="sheet-head">
     <h2 id="viewer-title"></h2>
-    <button type="button" class="text close" data-close>完了</button>
+    <button type="button" class="glass-circle" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
   </div>
   <div id="viewer-body" class="viewer-body"></div>
 </dialog>
@@ -216,5 +219,6 @@
 </dialog>
 
 <p id="toast" class="toast" role="status" hidden></p>
+<p id="announce" class="visually-hidden" role="status"></p>
 </body>
 </html>
