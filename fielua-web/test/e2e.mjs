@@ -84,7 +84,8 @@ const LONG = ["```js", ...Array.from({ length: 80 }, (_, i) => `const line${i} =
 // Haiku isn't offered and Fable takes no 超高: the page must not let either be chosen.
 const OFFERED = {
   "claude-opus-5-5": ["low", "medium", "high", "xhigh"],
-  "claude-fable-5-1": ["low", "medium", "high"],
+  "claude-fable-5-2": ["low", "medium", "high"],
+  "claude-fable-5-1": ["low", "medium", "high", "xhigh"],
   "claude-sonnet-5-5": ["low", "medium", "high", "xhigh"],
 };
 
@@ -525,7 +526,7 @@ try {
     subs: Array.from(document.querySelectorAll("#model-list .choice .sub")).map((sub) => sub.textContent),
     text: document.getElementById("model-sheet").textContent,
   }));
-  check("models in Fielua's order, Opus 5.5 first", sheet.models.map((m) => m.name).join(",") === "Claude Opus 5.5,Claude Fable 5.1,Claude Sonnet 5.5,Claude Haiku 5.5");
+  check("models in Fielua's order, Opus 5.5 first", sheet.models.map((m) => m.name).join(",") === "Claude Opus 5.5,Claude Fable 5.2,Claude Sonnet 5.5,Claude Haiku 5.5", sheet.models.map((m) => m.name).join(","));
   check("a model Anthropic doesn't offer can't be chosen", sheet.models[3].disabled && !sheet.models[0].disabled);
   check("中 is chosen and marked 標準; 超高 is just 超高", sheet.efforts[1].checked === "true" && sheet.efforts[1].title.includes("標準") &&
     sheet.efforts[3].title === "超高", JSON.stringify(sheet.efforts));
@@ -536,7 +537,7 @@ try {
   await dev.screenshot({ path: join(SHOTS, "check-model-sheet.png") });
   await dev.locator("#model-list .choice").nth(1).click();
   const fable = await dev.evaluate(() => Array.from(document.querySelectorAll("#effort-list .choice")).map((b) => b.disabled));
-  check("a level the model doesn't take can't be chosen (Fable 5.1 at 超高)", fable[3] === true && fable[0] === false);
+  check("a level the model doesn't take can't be chosen (Fable 5.2 at 超高)", fable[3] === true && fable[0] === false);
   await dev.locator("#model-list .choice").nth(2).click();
   await dev.locator("#effort-list .choice").nth(0).click();
   await dev.click("#model-sheet [data-close]");
@@ -1190,6 +1191,37 @@ try {
   const madeCard = dev.locator(".msg.assistant .made-file").first();
   if (await madeCard.count()) await madeCard.scrollIntoViewIfNeeded();
   await dev.screenshot({ path: join(SHOTS, "check-dark.png") });
+
+  // Fable 5.1 chosen before Fable 5.2 came: the page goes on with 5.2, at the level chosen for 5.1, and a reply 5.1 wrote keeps its name.
+  {
+    const session = await dev.evaluate(() => sessionStorage.getItem("fielua.session"));
+    const chat = JSON.parse(chatBeforeTools);
+    const old = chat.messages.find((m) => m.role === "assistant" && m.text);
+    Object.assign(old, { model: "claude-fable-5-1", effort: "high", served: "claude-fable-5-1" });
+    chat.messages = chat.messages.slice(0, chat.messages.indexOf(old) + 1);
+    const context = await browser.newContext({ viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true });
+    await context.addInitScript(([s, c]) => {
+      sessionStorage.setItem("fielua.session", s);
+      sessionStorage.setItem("fielua.chat", c);
+      localStorage.setItem("fielua.prefs", JSON.stringify({ model: "claude-fable-5-1", efforts: { "claude-fable-5-1": "low" } }));
+    }, [session, JSON.stringify(chat)]);
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    await page.goto(page0);
+    await page.waitForSelector(".msg.assistant .caption");
+    await page.waitForFunction(() => document.getElementById("model-name").textContent === "Claude Fable 5.2", null, { timeout: 5000 }).catch(() => {});
+    const seen = await page.evaluate(() => ({
+      name: document.getElementById("model-name").textContent,
+      sub: document.getElementById("model-sub").textContent,
+      caption: document.querySelector(".msg.assistant .caption span").textContent,
+      prefs: JSON.parse(localStorage.getItem("fielua.prefs")),
+    }));
+    check("a saved Fable 5.1 goes on as Fable 5.2, at its level", seen.name === "Claude Fable 5.2" && seen.sub.includes("低"), JSON.stringify(seen));
+    check("a reply Fable 5.1 wrote keeps its name", seen.caption.startsWith("Claude Fable 5.1 · 推論 高") && !seen.caption.includes("claude-"), seen.caption);
+    check("no page errors with a saved Fable 5.1", errors.length === 0, errors.join(" | "));
+    await context.close();
+  }
 
   check("no page errors on the iPhone", devErrors.length === 0, devErrors.join(" | "));
   check("no page errors on the PC", friendErrors.length === 0, friendErrors.join(" | "));

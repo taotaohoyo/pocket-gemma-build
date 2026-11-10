@@ -28,10 +28,14 @@ const startEffort = (model) => (model.efforts.includes(START_EFFORT) ? START_EFF
 /** The relay's catalog as this version knows it, in Fielua's order, until the relay answers. */
 const BUILT_IN = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
-  { id: "claude-fable-5-1", name: "Claude Fable 5.1", efforts: EFFORTS, defaultEffort: "high", available: null },
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: EFFORTS, defaultEffort: "high", available: null },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: EFFORTS, defaultEffort: "high", available: null },
   { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
 ];
+/** Models the relay no longer offers, and what took their place: a saved choice moves on, and old replies keep their name. */
+const FORMER = new Map([
+  ["claude-fable-5-1", { name: "Claude Fable 5.1", now: "claude-fable-5-2" }],
+]);
 
 // As the relay takes them (claude-relay/src/turns.ts), with room to spare.
 const MAX_TURNS = 40;
@@ -66,9 +70,14 @@ const state = {
 function loadPrefs() {
   try {
     const value = JSON.parse(localStorage.getItem("fielua.prefs") ?? "{}");
+    const saved = typeof value.model === "string" ? value.model : DEFAULT_MODEL;
+    const efforts = typeof value.efforts === "object" && value.efforts ? value.efforts : {};
+    // Fable 5.1 chosen before Fable 5.2 came: Fable 5.2, at the level chosen for 5.1.
+    const now = FORMER.get(saved)?.now;
+    if (now && efforts[now] === undefined && efforts[saved] !== undefined) efforts[now] = efforts[saved];
     return {
-      model: typeof value.model === "string" ? value.model : DEFAULT_MODEL,
-      efforts: typeof value.efforts === "object" && value.efforts ? value.efforts : {},
+      model: now ?? saved,
+      efforts,
       // The plus menu's switches: off until turned on, then kept on this device.
       tools: { webSearch: value.tools?.webSearch === true, files: value.tools?.files === true },
       // On a wide screen, whether the list stands beside the chat (open until closed).
@@ -570,7 +579,7 @@ function choice() {
 }
 
 function modelName(id) {
-  return catalog().find((m) => m.id === id)?.name ?? id ?? "Claude";
+  return catalog().find((m) => m.id === id)?.name ?? FORMER.get(id)?.name ?? id ?? "Claude";
 }
 
 function renderTopbar() {

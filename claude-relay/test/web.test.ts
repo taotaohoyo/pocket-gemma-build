@@ -468,11 +468,11 @@ describe("chatting from the web", () => {
     const status = await (await call("GET", "/v1/status", { token })).json() as { models: { id: string; efforts: string[]; available: boolean | null }[] };
     expect(status.models.map((m) => [m.id, m.available, m.efforts.join("/")])).toEqual([
       ["claude-opus-5-5", true, "low/medium/high"],
-      ["claude-fable-5-1", false, "low/medium/high/xhigh"],
+      ["claude-fable-5-2", false, "low/medium/high/xhigh"],
       ["claude-sonnet-5-5", true, "low/medium/high/xhigh"],
       ["claude-haiku-5-5", true, "low/medium/high/xhigh"],
     ]);
-    const fable = await call("POST", "/v1/messages", { token, body: { ...hello, model: "claude-fable-5-1" } });
+    const fable = await call("POST", "/v1/messages", { token, body: { ...hello, model: "claude-fable-5-2" } });
     expect(await fable.json()).toEqual({ error: "model_unavailable" });
     const xhigh = await call("POST", "/v1/messages", { token, body: { ...hello, model: "claude-opus-5-5", effort: "xhigh" } });
     expect(await xhigh.json()).toEqual({ error: "unsupported_effort" });
@@ -790,6 +790,7 @@ describe("the estimate of the credit left", () => {
   });
 
   it("prices each model, Haiku's long prompts and cache reads included", () => {
+    expect(costMicros("claude-fable-5-2", { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000 })).toBe(8_000_000 + 40_000_000 + 200_000);
     expect(costMicros("claude-fable-5-1", { input_tokens: 1_000_000, output_tokens: 0 })).toBe(10_000_000);
     expect(costMicros("claude-sonnet-5-5", { cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 1_000_000 })).toBe(200_000 + 2_500_000);
     expect(costMicros("claude-haiku-5-5", { input_tokens: 50_000, output_tokens: 1_000 })).toBe(5_000 + 500);
