@@ -28,6 +28,24 @@ export async function webSessionHash(token: string): Promise<string> {
   return sha256hex("fielua-web-session-v1:" + token);
 }
 
+/**
+ * The developer's iPhone managing the relay (1.1.0 (262)): "fda_" and 32
+ * random bytes in base64url, given after Face ID let the iPhone's own key
+ * sign the relay's challenge (device.ts), kept only as its hash, and good
+ * for 15 minutes, as a passkey sign-in is for the web's management.
+ */
+export function newDeviceAdminToken(): string {
+  return "fda_" + base64url(randomBytes(32));
+}
+
+export function isDeviceAdminToken(text: string): boolean {
+  return /^fda_[A-Za-z0-9_-]{43}$/.test(text);
+}
+
+export async function deviceAdminHash(token: string): Promise<string> {
+  return sha256hex("fielua-device-admin-v1:" + token);
+}
+
 /** A WebAuthn challenge: 32 random bytes in base64url. */
 export function newChallenge(): string {
   return base64url(randomBytes(32));

@@ -258,6 +258,145 @@ describe("the admin key", () => {
   });
 });
 
+describe("the developer's iPhone with Face ID (1.1.0 (262))", () => {
+  // The app's key is in the Secure Enclave and signs after Face ID; here, a WebCrypto key in its place.
+  async function deviceKey() {
+    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    return { pair, publicKey: Buffer.from(raw).toString("base64url") };
+  }
+
+  async function sign(pair: CryptoKeyPair, challenge: string): Promise<string> {
+    const message = new TextEncoder().encode("fielua-claude-admin-v1:" + challenge);
+    return Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, message)).toString("base64url");
+  }
+
+  async function register(name: string, role: "developer" | "friend", key: unknown) {
+    const code = await invite(name, role);
+    const response = await call("POST", "/v1/redeem", { body: { code, deviceKey: key } });
+    expect(response.status).toBe(200);
+    return (await response.json()) as { token: string; role: string; deviceAdmin: boolean };
+  }
+
+  async function options(token: string) {
+    const response = await call("POST", "/v1/admin-session/options", { token });
+    expect(response.status).toBe(200);
+    return (await response.json()) as { challengeId: string; challenge: string };
+  }
+
+  async function unlock(token: string, pair: CryptoKeyPair): Promise<string> {
+    const { challengeId, challenge } = await options(token);
+    const response = await call("POST", "/v1/admin-session", { token, body: { challengeId, signature: await sign(pair, challenge) } });
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as { token: string; expiresAt: number };
+    expect(data.token).toMatch(/^fda_[A-Za-z0-9_-]{43}$/);
+    expect(data.expiresAt).toBe(h.clock.now + 15 * 60 * 1000);
+    return data.token;
+  }
+
+  it("a developer's invite ties the iPhone's key; a friend's, a malformed key or none ties nothing", async () => {
+    const { publicKey } = await deviceKey();
+    const developer = await register("開発者", "developer", publicKey);
+    expect(developer.deviceAdmin).toBe(true);
+    expect(await (await call("GET", "/v1/status", { token: developer.token })).json()).toMatchObject({ deviceAdmin: true });
+    expect((await register("友人", "friend", publicKey)).deviceAdmin).toBe(false);
+    const flipped = publicKey.slice(0, 40) + (publicKey[40] === "A" ? "B" : "A") + publicKey.slice(41);
+    for (const key of [flipped, publicKey.slice(1), "x".repeat(87), 42, null]) {
+      const other = await register("開発者2", "developer", key);
+      expect(other.deviceAdmin).toBe(false);
+      expect(await (await call("GET", "/v1/status", { token: other.token })).json()).toMatchObject({ deviceAdmin: false });
+    }
+    // The same redeem as before for an app that sends no key.
+    expect((await join("開発者3", "developer"))).toMatch(/^fcl_/);
+  });
+
+  it("Face ID's signature gives an admin token for 15 minutes; the access token alone manages nothing", async () => {
+    const { pair, publicKey } = await deviceKey();
+    const { token } = await register("開発者", "developer", publicKey);
+    expect((await call("GET", "/admin/state", { token })).status).toBe(401);
+    const admin = await unlock(token, pair);
+    expect((await call("GET", "/admin/state", { token: admin })).status).toBe(200);
+    const made = await call("POST", "/admin/invites", { token: admin, body: { name: "友人", role: "friend" } });
+    expect(made.status).toBe(200);
+    expect((await call("POST", "/admin/settings", { token: admin, body: { creditUSD: 25 } })).status).toBe(200);
+    // Not a token for chatting, and not for anything after 15 minutes.
+    expect((await call("GET", "/v1/status", { token: admin })).status).toBe(401);
+    h.clock.now += 15 * 60 * 1000;
+    const lapsed = await call("GET", "/admin/state", { token: admin });
+    expect(lapsed.status).toBe(401);
+    expect(await lapsed.json()).toEqual({ error: "reauth_required" });
+    // Face ID again: a new one, and the one before is gone.
+    const again = await unlock(token, pair);
+    const newer = await unlock(token, pair);
+    expect((await call("GET", "/admin/state", { token: again })).status).toBe(401);
+    expect((await call("GET", "/admin/state", { token: newer })).status).toBe(200);
+    expect(JSON.stringify(h.core.listUsers())).not.toContain(newer);
+  });
+
+  it("only this iPhone's key, on its own challenge, once", async () => {
+    const mine = await deviceKey();
+    const other = await deviceKey();
+    const { token } = await register("開発者", "developer", mine.publicKey);
+    const { token: second } = await register("開発者2", "developer", other.publicKey);
+    // Another key's signature.
+    let asked = await options(token);
+    let response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: await sign(other.pair, asked.challenge) } });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "signature_rejected" });
+    // The challenge went with that try.
+    response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: await sign(mine.pair, asked.challenge) } });
+    expect(response.status).toBe(400);
+    // Another developer's challenge, even signed by the right key.
+    asked = await options(second);
+    response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: await sign(mine.pair, asked.challenge) } });
+    expect(response.status).toBe(400);
+    // Something signed that isn't the challenge, or no signature.
+    asked = await options(token);
+    response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: await sign(mine.pair, asked.challenge + "x") } });
+    expect(response.status).toBe(401);
+    asked = await options(token);
+    response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: "A".repeat(86) } });
+    expect(response.status).toBe(401);
+    asked = await options(token);
+    expect((await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId } })).status).toBe(401);
+    // A challenge lapses after five minutes.
+    asked = await options(token);
+    h.clock.now += 5 * 60 * 1000 + 1;
+    response = await call("POST", "/v1/admin-session", { token, body: { challengeId: asked.challengeId, signature: await sign(mine.pair, asked.challenge) } });
+    expect(response.status).toBe(400);
+  });
+
+  it("is the developer's alone: not a friend's, not without a key, not the admin key or a web session", async () => {
+    h.core.setFriendsEnabled(true);
+    const { publicKey } = await deviceKey();
+    const friend = await register("友人", "friend", publicKey);
+    expect((await call("POST", "/v1/admin-session/options", { token: friend.token })).status).toBe(403);
+    const keyless = await join("開発者", "developer");
+    const refused = await call("POST", "/v1/admin-session/options", { token: keyless });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: "no_device_key" });
+    expect((await call("POST", "/v1/admin-session/options", { token: ADMIN })).status).toBe(401);
+    expect((await call("POST", "/v1/admin-session/options", { token: "fws_" + "A".repeat(43) })).status).toBe(401);
+    expect((await call("POST", "/v1/admin-session/options")).status).toBe(401);
+    expect((await call("GET", "/admin/state", { token: "fda_" + "A".repeat(43) })).status).toBe(401);
+  });
+
+  it("ends with the person: stopped, deleted or gone on their own", async () => {
+    const { pair, publicKey } = await deviceKey();
+    const { token } = await register("開発者", "developer", publicKey);
+    const id = h.core.listUsers()[0]!.id;
+    const admin = await unlock(token, pair);
+    h.core.setStatus(id, "revoked");
+    expect((await call("GET", "/admin/state", { token: admin })).status).toBe(403);
+    expect((await call("POST", "/v1/admin-session/options", { token })).status).toBe(403);
+    h.core.setStatus(id, "active");
+    expect((await call("GET", "/admin/state", { token: admin })).status).toBe(200);
+    expect((await call("POST", "/v1/leave", { token })).status).toBe(200);
+    expect((await call("GET", "/admin/state", { token: admin })).status).toBe(401);
+    expect(h.core.deviceKey(id)).toBeNull();
+  });
+});
+
 describe("what a reply may carry", () => {
   let token: string;
   beforeEach(async () => { token = await join("開発者", "developer"); });

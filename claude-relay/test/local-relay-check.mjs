@@ -257,6 +257,22 @@ try {
 
   check("Anthropic's Models API says the four models are offered", status.models?.every((m) => m.available === true), JSON.stringify(status.models?.map((m) => m.available)));
 
+  // The developer's iPhone managing with Face ID (1.1.0 (262)): workerd's WebCrypto checks its signature
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const deviceKey = Buffer.from(await crypto.subtle.exportKey("raw", pair.publicKey)).toString("base64url");
+  const phoneInvite = await (await api("POST", "/admin/invites", { token: ADMIN, body: { name: "開発者のiPhone", role: "developer" } })).json();
+  const phone = await (await api("POST", "/v1/redeem", { body: { code: phoneInvite.code, deviceKey } })).json();
+  check("a developer's invite ties the iPhone's Face ID key", phone.deviceAdmin === true && /^fcl_/.test(phone.token), JSON.stringify({ ...phone, token: undefined }));
+  check("its access token alone manages nothing", (await api("GET", "/admin/state", { token: phone.token })).status === 401);
+  const asked = await (await api("POST", "/v1/admin-session/options", { token: phone.token })).json();
+  const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey,
+    new TextEncoder().encode("fielua-claude-admin-v1:" + asked.challenge))).toString("base64url");
+  const unlocked = await (await api("POST", "/v1/admin-session", { token: phone.token, body: { challengeId: asked.challengeId, signature } })).json();
+  const managed = await api("GET", "/admin/state", { token: unlocked.token });
+  check("the signed challenge gives an admin token for 15 minutes", /^fda_/.test(unlocked.token) && managed.status === 200 &&
+    Math.abs(unlocked.expiresAt - Date.now() - 15 * 60 * 1000) < 60 * 1000, JSON.stringify({ status: managed.status, expiresAt: unlocked.expiresAt }));
+  check("the same challenge never twice", (await api("POST", "/v1/admin-session", { token: phone.token, body: { challengeId: asked.challengeId, signature } })).status === 400);
+
   // The web app's origin, and no other
   const pre = await fetch(`${relay}/v1/messages`, { method: "OPTIONS", headers: { Origin: "https://suelira.com", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type" } });
   const evil = await fetch(`${relay}/v1/messages`, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" } });
