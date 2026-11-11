@@ -1,0 +1,22 @@
+{
+  "name": "fielua-claude-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fielua's relay to the Claude API: keeps the API key on Cloudflare, lets the developer and invited friends in.",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:local": "node test/local-relay-check.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261106.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7",
+    "wrangler": "4.158.0"
+  }
+}
