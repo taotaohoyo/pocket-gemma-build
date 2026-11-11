@@ -103,8 +103,10 @@ export class ReplyKeeper {
     const [live, rest] = stream.tee();
     const [copy, tail] = rest.tee();
     run.tail = tail;
-    // Gathered by the runtime; it ends when Anthropic's stream does, however it ends.
-    void gather(copy).then((bytes) => {
+    // Gathered by the runtime; it ends when Anthropic's stream does, however it ends, or when the
+    // reply is stopped: a copy still being read would keep Anthropic writing (the request's own
+    // stop does not always reach a reply that is already streaming).
+    void gather(copy, run.stop.signal).then((bytes) => {
       if (this.run !== run) return;
       run.whole = bytes;
       const unread = run.tail;

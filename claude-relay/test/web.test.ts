@@ -629,6 +629,27 @@ describe("a reply a dropped connection doesn't end", () => {
     expect(early.holding).toBe(false);
   });
 
+  it("stopped, reads no more of Anthropic's stream: with the page's copy gone too, the stream itself is let go", async () => {
+    const { timers, now } = handTimers();
+    const keeper = new ReplyKeeper(timers, now);
+    keeper.begin("u1", KEY);
+    let letGo = false;
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const anthropic = new ReadableStream<Uint8Array>({ start: (c) => { controller = c; }, cancel: () => { letGo = true; } });
+    const live = keeper.hold(anthropic, {});
+    controller.enqueue(encoder.encode("event: message_start\n"));
+    await settle();
+    // The page's connection goes (its 停止 ends its own request first): the reply is still kept, still read.
+    // (A split stream's cancel settles only once every copy is cancelled: not waited for.)
+    void live.cancel();
+    await settle();
+    expect(letGo).toBe(false);
+    expect(keeper.end("u1")).toBe(true);
+    await settle();
+    await settle();
+    expect(letGo).toBe(true);
+  });
+
   it("is asked at /v1/replies/:key: checked at the edge, then kept, and never stopped by the page's connection", async () => {
     const { timers, now } = handTimers();
     const { hub, keepers } = stubHub(timers, now);
