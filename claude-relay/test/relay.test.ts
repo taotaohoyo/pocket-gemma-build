@@ -738,6 +738,30 @@ describe("the invite page", () => {
     expect(await page.text()).toContain("location.hash");
   });
 
+  it("offers the app alone without Fielua for the web", async () => {
+    const text = await (await call("GET", "/join")).text();
+    expect(text).toContain("Fielua で開く");
+    expect(text).not.toContain('id="web"');
+  });
+
+  it("offers the app or the web when Fielua for the web is set (2026-11-11)", async () => {
+    h.env = { ...h.env, WEB_ORIGINS: "https://suelira.com", WEB_RP_ID: "suelira.com", WEB_APP_URL: "https://suelira.com/chat/" };
+    const text = await (await call("GET", "/join")).text();
+    expect(text).toContain("iPhone の Fielua アプリで登録");
+    expect(text).toContain('id="web"');
+    expect(text).toContain('"https://suelira.com/chat/" + "#invite=" + encodeURIComponent(code)');
+    expect(text).toContain("fielua://claude?server=");
+  });
+
+  it("offers no web page off the web's origins", async () => {
+    for (const WEB_APP_URL of ["https://evil.example/chat/", "https://suelira.com/chat/?x=1", "javascript:alert(1)", "not a url"]) {
+      h.env = { ...h.env, WEB_ORIGINS: "https://suelira.com", WEB_RP_ID: "suelira.com", WEB_APP_URL };
+      expect(await (await call("GET", "/join")).text()).not.toContain('id="web"');
+    }
+    h.env = { ...h.env, WEB_ORIGINS: "", WEB_APP_URL: "https://suelira.com/chat/" };
+    expect(await (await call("GET", "/join")).text()).not.toContain('id="web"');
+  });
+
   it("is all there is outside /v1 and /admin", async () => {
     expect((await call("GET", "/")).status).toBe(404);
     expect((await call("GET", "/v1/messages")).status).toBe(404);
