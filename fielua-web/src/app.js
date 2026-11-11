@@ -554,6 +554,22 @@ function wireLogin() {
   });
 }
 
+/**
+ * The link to send with an invite: the relay's invite page (/join#CODE), which lets the person
+ * register in the iPhone app or here, on the web (Hachimoto さん, 2026-11-11). Only a link on the
+ * relay itself is taken as it came; otherwise this page's own #invite= link, as before.
+ */
+function inviteLink(made) {
+  const own = `${location.origin}${location.pathname}#invite=${made.code}`;
+  try {
+    const link = new URL(made.link);
+    if (link.origin !== new URL(RELAY).origin || link.pathname !== "/join" || link.search || link.hash !== `#${made.code}`) return own;
+    return link.href;
+  } catch {
+    return own;
+  }
+}
+
 /** `#invite=CODE` in the address (an invite link): the code is put in its field and leaves the address. */
 function readInviteLink() {
   const match = /^#invite=([A-Za-z0-9-]{8,40})$/.exec(location.hash);
@@ -2309,7 +2325,7 @@ async function developerSection() {
         const result = await adminCall("/admin/invites", { method: "POST", body: { name: name.value.trim(), role: role.value } });
         if (!result) return;
         name.value = "";
-        const link = `${location.origin}${location.pathname}#invite=${result.code}`;
+        const link = inviteLink(result);
         made.replaceChildren(
           h("div", { class: "link-out", text: result.code }),
           h("div", { class: "link-out", text: link }),

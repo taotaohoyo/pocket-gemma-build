@@ -332,6 +332,7 @@ const wrangler = spawn("npx", [
   "--var", `ANTHROPIC_BASE_URL:http://127.0.0.1:${anthropicPort}`,
   "--var", `WEB_ORIGINS:http://localhost:${webPort}`,
   "--var", "WEB_RP_ID:localhost",
+  "--var", `WEB_APP_URL:http://localhost:${webPort}/chat/`,
 ], { cwd: relayDir, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true });
 let relayLog = "";
 wrangler.stdout.on("data", (d) => (relayLog += d));
@@ -1222,6 +1223,8 @@ try {
   await dev.getByRole("button", { name: "作る" }).click();
   await dev.waitForSelector("#settings-sheet .link-out");
   const code = await dev.locator("#settings-sheet .link-out").first().textContent();
+  const inviteURL = await dev.locator("#settings-sheet .link-out").nth(1).textContent();
+  check("the invite's link is the relay's invite page", inviteURL === `${relay}/join#${code}`, inviteURL);
   await dev.click("#settings-sheet [data-close]");
   await settled(dev);
 
@@ -1229,7 +1232,16 @@ try {
   const friend = await friendContext.newPage();
   const friendErrors = await watch(friend);
   await passkeyDevice(friendContext, friend);
-  await friend.goto(`${page0}#invite=${code}`);
+  // The invite page offers the iPhone app or the web; the web's way leads here, with the code.
+  await friend.goto(inviteURL);
+  const choices = await friend.evaluate(() => ({
+    app: document.getElementById("open")?.textContent, appHref: document.getElementById("open")?.getAttribute("href"),
+    web: document.getElementById("web")?.textContent, webHref: document.getElementById("web")?.getAttribute("href"),
+  }));
+  check("the invite page offers the iPhone app or the web, each with the code",
+    choices.app === "iPhone の Fielua アプリで登録" && choices.appHref.startsWith("fielua://claude?server=") && choices.appHref.endsWith(`&code=${code}`) &&
+    choices.web === "Web 版 Fielua（ブラウザ）で登録" && choices.webHref === `${page0}#invite=${code}`, JSON.stringify(choices));
+  await friend.click("#web");
   await friend.waitForSelector("#login-invite:not([hidden])");
   check("an invite link opens the invite with its code, and the code leaves the address", (await friend.inputValue("#invite-code")) === code && !friend.url().includes(code));
   await friend.click("#invite-register");
