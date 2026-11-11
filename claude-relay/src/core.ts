@@ -70,7 +70,8 @@ export interface Credit {
 export const MAX_CREDIT_MICROS = 100_000 * 1_000_000;
 
 export type RedeemResult =
-  | { ok: true; user: User }
+  /** deviceAdmin: the iPhone's Face ID key was tied to the person (a developer's invite only; device.ts). */
+  | { ok: true; user: User; deviceAdmin?: boolean }
   | { ok: false; error: "invalid_code" | "too_many_attempts" };
 
 /** A passkey the web app signs in with: its credential id, public key and signature counter. Never a secret. */
@@ -90,11 +91,11 @@ export interface WebSession {
   expiresAt: number;
 }
 
-/** A WebAuthn challenge the relay handed out, used once within CHALLENGE_LIFETIME_MS. */
+/** A WebAuthn challenge the relay handed out (or one for the developer's iPhone, device.ts), used once within CHALLENGE_LIFETIME_MS. */
 export interface Challenge {
   id: string;
   challenge: string;
-  purpose: "register" | "login";
+  purpose: "register" | "login" | "device-admin";
   /** For a registration: the invite it will use up, and the new person's id (the passkey's user handle). */
   inviteHash: string | null;
   userID: string | null;
@@ -119,6 +120,8 @@ export const MAX_NAME_LENGTH = 40;
 export const WEB_SESSION_LIFETIME_MS = 12 * HOUR_MS;
 /** The developer's admin work on the web needs a passkey sign-in at most 15 minutes old. */
 export const WEB_ADMIN_FRESH_MS = 15 * 60 * 1000;
+/** And on the developer's iPhone, Face ID at most as long ago (device.ts). */
+export const DEVICE_ADMIN_LIFETIME_MS = WEB_ADMIN_FRESH_MS;
 export const CHALLENGE_LIFETIME_MS = 5 * 60 * 1000;
 /** Open challenges at once, everyone together: more is someone knocking, and gets "busy". */
 export const MAX_OPEN_CHALLENGES = 200;
@@ -153,6 +156,11 @@ export class RegistryCore {
       kind TEXT NOT NULL, id TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (kind, id))`);
     // The key each web user's browser encrypts its own history with (the history stays on that device).
     sql.exec(`CREATE TABLE IF NOT EXISTS history_keys (user_id TEXT PRIMARY KEY, key TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+    // The developer's iPhone (1.1.0 (262), device.ts): the public half of its Face ID key, and its admin tokens (hashes).
+    sql.exec(`CREATE TABLE IF NOT EXISTS device_keys (
+      user_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS device_admin (
+      token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)`);
   }
 
   // MARK: Users
@@ -177,12 +185,14 @@ export class RegistryCore {
     return row ? toUser(row) : null;
   }
 
-  /** The person and everything that signs them in: their passkeys and their browsers' sessions too. */
+  /** The person and everything that signs them in: their passkeys, their browsers' sessions and their iPhone's key too. */
   deleteUser(id: string): boolean {
     const before = this.listUsers().length;
     this.sql.exec(`DELETE FROM users WHERE id = ?`, id);
     this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM web_sessions WHERE user_id = ?`, id);
+    this.sql.exec(`DELETE FROM device_keys WHERE user_id = ?`, id);
+    this.sql.exec(`DELETE FROM device_admin WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM outputs WHERE user_id = ?`, id);
     this.sql.exec(`DELETE FROM history_keys WHERE user_id = ?`, id);
     return this.listUsers().length < before;
@@ -248,12 +258,19 @@ export class RegistryCore {
   /**
    * Trades an invite for a user with the given token hash: the invite is
    * used up at once, whatever happens next. Too many wrong codes within an
-   * hour stop redeeming until the hour has passed.
+   * hour stop redeeming until the hour has passed. A developer's invite
+   * also ties the iPhone's Face ID key (checked already, device.ts) to
+   * the new person; a friend's ties none.
    */
-  redeem(codeHash: string, userID: string, tokenHash: string): RedeemResult {
+  redeem(codeHash: string, userID: string, tokenHash: string, deviceKey: string | null = null): RedeemResult {
     const checked = this.checkInvite(codeHash);
     if (!checked.ok) return checked;
-    return { ok: true, user: this.useInvite(checked.invite, userID, tokenHash) };
+    const user = this.useInvite(checked.invite, userID, tokenHash);
+    const deviceAdmin = !!deviceKey && user.role === "developer";
+    if (deviceAdmin) {
+      this.sql.exec(`INSERT INTO device_keys (user_id, public_key, created_at, last_used_at) VALUES (?, ?, ?, NULL)`, userID, deviceKey, this.now());
+    }
+    return { ok: true, user, deviceAdmin };
   }
 
   /**
@@ -365,6 +382,35 @@ export class RegistryCore {
 
   endSession(tokenHash: string): void {
     this.sql.exec(`DELETE FROM web_sessions WHERE token_hash = ?`, tokenHash);
+  }
+
+  // MARK: The developer's iPhone (device.ts)
+
+  /** The public half of the person's Face ID key; null when their invite tied none. */
+  deviceKey(userID: string): string | null {
+    const row = this.sql.exec(`SELECT public_key FROM device_keys WHERE user_id = ?`, userID).toArray()[0];
+    return row ? String(row.public_key) : null;
+  }
+
+  /** An admin token for the person's iPhone, after its key signed: the one before it goes. */
+  createDeviceAdmin(tokenHash: string, userID: string): { createdAt: number; expiresAt: number } {
+    const now = this.now();
+    this.sql.exec(`DELETE FROM device_admin WHERE expires_at <= ? OR user_id = ?`, now, userID);
+    const expiresAt = now + DEVICE_ADMIN_LIFETIME_MS;
+    this.sql.exec(`INSERT INTO device_admin (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`, tokenHash, userID, now, expiresAt);
+    this.sql.exec(`UPDATE device_keys SET last_used_at = ? WHERE user_id = ?`, now, userID);
+    return { createdAt: now, expiresAt };
+  }
+
+  /** The person an iPhone's admin token belongs to, revoked or not; null once it lapsed or the person was deleted. */
+  deviceAdminUser(tokenHash: string): User | null {
+    const row = this.sql.exec(`SELECT * FROM device_admin WHERE token_hash = ?`, tokenHash).toArray()[0];
+    if (!row) return null;
+    if (Number(row.expires_at) <= this.now()) {
+      this.sql.exec(`DELETE FROM device_admin WHERE token_hash = ?`, tokenHash);
+      return null;
+    }
+    return this.user(String(row.user_id));
   }
 
   // MARK: Settings

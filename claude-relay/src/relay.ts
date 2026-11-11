@@ -6,7 +6,8 @@
 // through.
 //
 //   GET  /v1/status            the user and whether Claude can answer now
-//   POST /v1/redeem            an invite code for an access token (once)
+//   POST /v1/redeem            an invite code for an access token (once), and a developer's iPhone's Face ID key tied to them
+//   POST /v1/admin-session/options, /v1/admin-session   Face ID on the developer's iPhone for an admin token (15 minutes; device.ts)
 //   POST /v1/messages          a reply to the chat's turns, streamed, by the chosen model and level (and tools: web search, files)
 //   POST /v1/replies/:key      the same reply, which a dropped connection doesn't end (reply.ts); the page picks the key
 //   GET  /v1/replies/:key      that reply again from its first byte, and what is still coming (its own person only)
@@ -19,7 +20,7 @@
 //   POST /web/passkey/register/options|verify   an invite code for a passkey and a web session
 //   POST /web/passkey/login/options|verify      a passkey for a web session
 //   POST /web/logout                            the web session ended
-//   GET  /admin/state          users, open invites, switches       (admin key, or a developer's fresh web session)
+//   GET  /admin/state          users, open invites, switches       (admin key, a developer's fresh web session, or their iPhone's admin token)
 //   POST /admin/invites        a new invite                        (admin)
 //   DELETE /admin/invites/:id  an open invite withdrawn            (admin)
 //   POST /admin/users/:id/revoke|restore, DELETE /admin/users/:id  (admin)
@@ -32,12 +33,13 @@ import {
   catalog, choose, config, liveModels, modelInfo, modelName, NO_TOOLS, streamReply, type ClaudeConfig, type LiveModels, type ReplyChoice,
   type ToolChoice,
 } from "./claude";
+import { deviceAdminRoutes, readDeviceKey } from "./device";
 import { joinPage } from "./join";
 import { meter, OUTPUT_ID } from "./meter";
 import { REPLY_KEY, type ReplyKeeper } from "./reply";
 import {
-  adminKeyMatches, bearer, inviteHash, isAccessToken, isWebSessionToken, newAccessToken, newHistoryKey, newID, newInviteCode, normalizeInviteCode,
-  tokenHash, webSessionHash,
+  adminKeyMatches, bearer, deviceAdminHash, inviteHash, isAccessToken, isDeviceAdminToken, isWebSessionToken, newAccessToken, newHistoryKey, newID,
+  newInviteCode, normalizeInviteCode, tokenHash, webSessionHash,
 } from "./security";
 import { attachmentLimits, parseTurns, readJSON, type Turn } from "./turns";
 import type { StoredKey } from "./webauthn";
@@ -53,7 +55,7 @@ export interface RegistryAPI {
   createInvite(id: string, codeHash: string, name: string, role: Role): Promise<Invite>;
   listInvites(): Promise<Invite[]>;
   cancelInvite(id: string): Promise<boolean>;
-  redeem(codeHash: string, userID: string, tokenHash: string): Promise<RedeemResult>;
+  redeem(codeHash: string, userID: string, tokenHash: string, deviceKey?: string | null): Promise<RedeemResult>;
   settings(): Promise<Settings>;
   setFriendsEnabled(on: boolean): Promise<Settings>;
   pause(reason: PauseReason): Promise<Settings>;
@@ -74,6 +76,9 @@ export interface RegistryAPI {
   rememberOutputs(userID: string, container: string | null, files: string[]): Promise<void>;
   ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean>;
   historyKey(userID: string, candidate: string): Promise<string | null>;
+  deviceKey(userID: string): Promise<string | null>;
+  createDeviceAdmin(tokenHash: string, userID: string): Promise<{ createdAt: number; expiresAt: number }>;
+  deviceAdminUser(tokenHash: string): Promise<User | null>;
 }
 
 export interface RelayEnv {
@@ -179,6 +184,9 @@ async function route(request: Request, ctx: Context): Promise<Response> {
   if (path.startsWith("/v1/")) {
     if (request.method === "GET" && path === "/v1/status") return await status(request, ctx);
     if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, ctx.deps);
+    if (request.method === "POST" && (path === "/v1/admin-session/options" || path === "/v1/admin-session")) {
+      return await deviceAdminRoutes(request, path, ctx);
+    }
     if (request.method === "POST" && path === "/v1/messages") return await messages(request, ctx);
     const kept = /^\/v1\/replies\/([^/]+)$/.exec(path);
     if (kept && ["POST", "GET", "DELETE"].includes(request.method)) return await keptReply(request, ctx, kept[1]!);
@@ -304,19 +312,24 @@ async function status(request: Request, ctx: Context): Promise<Response> {
     web: person.session
       ? { expiresAt: person.session.expiresAt, adminUntil: person.role === "developer" ? person.session.createdAt + WEB_ADMIN_FRESH_MS : null }
       : undefined,
+    // Whether this iPhone may manage the relay with Face ID (device.ts).
+    deviceAdmin: !person.session && person.role === "developer" ? (await ctx.deps.registry.deviceKey(person.id)) !== null : false,
   });
 }
 
 async function redeem(request: Request, deps: Deps): Promise<Response> {
   const body = await readJSON(request);
   if (!body.ok) return json(body.error === "too_large" ? 413 : 400, { error: body.error });
-  const raw = (body.value as { code?: unknown } | null)?.code;
+  const value = body.value as { code?: unknown; deviceKey?: unknown } | null;
+  const raw = value?.code;
   const code = typeof raw === "string" ? normalizeInviteCode(raw) : null;
+  // The iPhone's Face ID key, when it sent one that is a key at all (a developer's invite ties it).
+  const deviceKey = await readDeviceKey(value?.deviceKey);
   const token = newAccessToken();
   // A malformed code counts as a wrong one: the same answer, the same count.
-  const result = await deps.registry.redeem(await inviteHash(code ?? "-"), newID(), await tokenHash(token));
+  const result = await deps.registry.redeem(await inviteHash(code ?? "-"), newID(), await tokenHash(token), deviceKey);
   if (!result.ok) return json(result.error === "too_many_attempts" ? 429 : 400, { error: result.error });
-  return json(200, { token, name: result.user.name, role: result.user.role });
+  return json(200, { token, name: result.user.name, role: result.user.role, deviceAdmin: result.deviceAdmin === true });
 }
 
 /** 登録を解除: the user's own record goes, revoked or not, with their passkeys and web sessions. */
@@ -540,12 +553,21 @@ export async function claudeFailure(error: unknown, deps: Deps): Promise<Respons
 // MARK: The developer
 
 /**
- * The admin key (the iPhone app, curl), or the developer's web session
- * when its passkey sign-in is at most 15 minutes old: older ones are asked
- * to sign in again (reauth_required), friends are refused (forbidden).
+ * The admin key (the iPhone app, curl), the developer's web session
+ * when its passkey sign-in is at most 15 minutes old, or their iPhone's
+ * admin token, at most 15 minutes after Face ID (device.ts): older ones
+ * are asked to sign in again (reauth_required), friends are refused
+ * (forbidden).
  */
 async function adminAllowed(request: Request, ctx: Context): Promise<Response | null> {
   const token = bearer(request);
+  if (token && isDeviceAdminToken(token)) {
+    const person = await ctx.deps.registry.deviceAdminUser(await deviceAdminHash(token));
+    if (!person) return json(401, { error: "reauth_required" });
+    if (person.status !== "active") return json(403, { error: "revoked" });
+    if (person.role !== "developer") return json(403, { error: "forbidden" });
+    return null;
+  }
   if (token && isWebSessionToken(token)) {
     const person = await caller(request, ctx);
     if (person instanceof Response) return person;

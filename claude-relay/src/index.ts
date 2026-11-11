@@ -39,8 +39,8 @@ export class Registry extends DurableObject<Env> implements RegistryAPI {
   }
   async listInvites(): Promise<Invite[]> { return this.core.listInvites(); }
   async cancelInvite(id: string): Promise<boolean> { return this.core.cancelInvite(id); }
-  async redeem(codeHash: string, userID: string, tokenHash: string): Promise<RedeemResult> {
-    return this.core.redeem(codeHash, userID, tokenHash);
+  async redeem(codeHash: string, userID: string, tokenHash: string, deviceKey: string | null = null): Promise<RedeemResult> {
+    return this.core.redeem(codeHash, userID, tokenHash, deviceKey);
   }
   async settings(): Promise<Settings> { return this.core.settings(); }
   async setFriendsEnabled(on: boolean): Promise<Settings> { return this.core.setFriendsEnabled(on); }
@@ -68,6 +68,12 @@ export class Registry extends DurableObject<Env> implements RegistryAPI {
   async ownsOutput(userID: string, kind: OutputKind, id: string): Promise<boolean> { return this.core.ownsOutput(userID, kind, id); }
   // The key a web user's browser encrypts its own history with
   async historyKey(userID: string, candidate: string): Promise<string | null> { return this.core.historyKey(userID, candidate); }
+  // The developer's iPhone: its Face ID key and admin tokens (device.ts)
+  async deviceKey(userID: string): Promise<string | null> { return this.core.deviceKey(userID); }
+  async createDeviceAdmin(tokenHash: string, userID: string): Promise<{ createdAt: number; expiresAt: number }> {
+    return this.core.createDeviceAdmin(tokenHash, userID);
+  }
+  async deviceAdminUser(tokenHash: string): Promise<User | null> { return this.core.deviceAdminUser(tokenHash); }
 }
 
 /**
