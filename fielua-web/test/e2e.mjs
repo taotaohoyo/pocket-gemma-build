@@ -563,7 +563,9 @@ try {
     subs: Array.from(document.querySelectorAll("#model-list .choice .sub")).map((sub) => sub.textContent),
     text: document.getElementById("model-sheet").textContent,
   }));
-  check("models in Fielua's order, Opus 5.5 first", sheet.models.map((m) => m.name).join(",") === "Claude Opus 5.5,Claude Fable 5.2,Claude Sonnet 5.5,Claude Haiku 5.5", sheet.models.map((m) => m.name).join(","));
+  // (The relay lists Opus first, as the iPhone app does; the page puts Fable above it.)
+  check("models in the page's order, Fable 5.2 first, then Opus 5.5", sheet.models.map((m) => m.name).join(",") === "Claude Fable 5.2,Claude Opus 5.5,Claude Sonnet 5.5,Claude Haiku 5.5", sheet.models.map((m) => m.name).join(","));
+  check("a new person still starts with Opus 5.5", sheet.models[1].checked === "true" && sheet.models.filter((m) => m.checked === "true").length === 1, JSON.stringify(sheet.models));
   check("a model Anthropic doesn't offer can't be chosen", sheet.models[3].disabled && !sheet.models[0].disabled);
   check("中 is chosen and marked 標準; 超高 is just 超高", sheet.efforts[1].checked === "true" && sheet.efforts[1].title.includes("標準") &&
     sheet.efforts[3].title === "超高", JSON.stringify(sheet.efforts));
@@ -572,11 +574,12 @@ try {
   check("no max level", sheet.efforts.length === 4 && !sheet.efforts.some((e) => /max|最大/.test(e.title)));
   await sleep(450);
   await dev.screenshot({ path: join(SHOTS, "check-model-sheet.png") });
-  await dev.locator("#model-list .choice").nth(1).click();
+  await dev.locator("#model-list .choice").nth(0).click();
   const fable = await dev.evaluate(() => Array.from(document.querySelectorAll("#effort-list .choice")).map((b) => b.disabled));
   check("a level the model doesn't take can't be chosen (Fable 5.2 at 超高)", fable[3] === true && fable[0] === false);
   // With a keyboard: Down walks to the next model and chooses it, the keyboard stays on the row, and the list is one Tab stop.
-  await dev.locator("#model-list .choice").nth(1).focus();
+  await dev.locator("#model-list .choice").nth(0).focus();
+  await dev.keyboard.press("ArrowDown");
   await dev.keyboard.press("ArrowDown");
   const walked = await dev.evaluate(() => {
     const rows = [...document.querySelectorAll("#model-list .choice")];

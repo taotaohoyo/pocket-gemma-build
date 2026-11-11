@@ -27,10 +27,20 @@ const DEFAULT_MODEL = "claude-opus-5-5";
 /** The level every model starts at until the person chooses one (Hachimoto さん, 2026-11-08). */
 const START_EFFORT = "medium";
 const startEffort = (model) => (model.efforts.includes(START_EFFORT) ? START_EFFORT : model.defaultEffort);
-/** The relay's catalog as this version knows it, in Fielua's order, until the relay answers. */
+/**
+ * The order the page lists the models in: Fable above Opus, so it doesn't look like the lighter one
+ * (Hachimoto さん, 2026-11-11). The relay keeps its own order (the iPhone app's); a model this
+ * version doesn't know yet comes after these, as the relay has it.
+ */
+const MODEL_ORDER = ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+const listed = (models) => {
+  const at = (model) => { const index = MODEL_ORDER.indexOf(model.id); return index < 0 ? MODEL_ORDER.length : index; };
+  return [...models].sort((a, b) => at(a) - at(b));
+};
+/** The relay's catalog as this version knows it, in the page's order, until the relay answers. */
 const BUILT_IN = [
-  { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
   { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: EFFORTS, defaultEffort: "high", available: null },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: EFFORTS, defaultEffort: "high", available: null },
   { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: EFFORTS, defaultEffort: "medium", available: null },
 ];
@@ -620,9 +630,14 @@ async function refreshStatus() {
   retryHistory();
 }
 
+let orderedFrom = null;
+let ordered = BUILT_IN;
 function catalog() {
   const models = state.status?.models;
-  return Array.isArray(models) && models.length ? models : BUILT_IN;
+  if (!Array.isArray(models) || !models.length) return BUILT_IN;
+  // (Sorted once for each answer of the relay: the list is asked for on every drawing.)
+  if (orderedFrom !== models) { orderedFrom = models; ordered = listed(models); }
+  return ordered;
 }
 
 function usable(model) {
