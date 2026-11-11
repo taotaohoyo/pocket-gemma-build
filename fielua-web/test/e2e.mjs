@@ -563,7 +563,7 @@ try {
     subs: Array.from(document.querySelectorAll("#model-list .choice .sub")).map((sub) => sub.textContent),
     text: document.getElementById("model-sheet").textContent,
   }));
-  // (The relay lists Opus first, as the iPhone app does; the page puts Fable above it.)
+  // (Fable above Opus, so it doesn't look like the lighter one; the relay lists them so too.)
   check("models in the page's order, Fable 5.2 first, then Opus 5.5", sheet.models.map((m) => m.name).join(",") === "Claude Fable 5.2,Claude Opus 5.5,Claude Sonnet 5.5,Claude Haiku 5.5", sheet.models.map((m) => m.name).join(","));
   check("a new person still starts with Opus 5.5", sheet.models[1].checked === "true" && sheet.models.filter((m) => m.checked === "true").length === 1, JSON.stringify(sheet.models));
   check("a model Anthropic doesn't offer can't be chosen", sheet.models[3].disabled && !sheet.models[0].disabled);

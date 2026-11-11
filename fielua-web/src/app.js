@@ -29,8 +29,8 @@ const START_EFFORT = "medium";
 const startEffort = (model) => (model.efforts.includes(START_EFFORT) ? START_EFFORT : model.defaultEffort);
 /**
  * The order the page lists the models in: Fable above Opus, so it doesn't look like the lighter one
- * (Hachimoto さん, 2026-11-11). The relay keeps its own order (the iPhone app's); a model this
- * version doesn't know yet comes after these, as the relay has it.
+ * (Hachimoto さん, 2026-11-11). The relay (and with it the iPhone app) lists them so too; this keeps
+ * the order whatever relay answers. A model this version doesn't know yet comes after these.
  */
 const MODEL_ORDER = ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 const listed = (models) => {

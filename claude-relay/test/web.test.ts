@@ -467,8 +467,8 @@ describe("chatting from the web", () => {
     ]);
     const status = await (await call("GET", "/v1/status", { token })).json() as { models: { id: string; efforts: string[]; available: boolean | null }[] };
     expect(status.models.map((m) => [m.id, m.available, m.efforts.join("/")])).toEqual([
-      ["claude-opus-5-5", true, "low/medium/high"],
       ["claude-fable-5-2", false, "low/medium/high/xhigh"],
+      ["claude-opus-5-5", true, "low/medium/high"],
       ["claude-sonnet-5-5", true, "low/medium/high/xhigh"],
       ["claude-haiku-5-5", true, "low/medium/high/xhigh"],
     ]);
