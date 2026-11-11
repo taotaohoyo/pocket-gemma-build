@@ -24,7 +24,17 @@ if (admin.length < 32) {
   process.exit(2);
 }
 
+// Anthropic's Models API, as the relay asks it which models and levels it offers now.
+const MODEL_IDS = ["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
+function modelsList(res) {
+  const effort = { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } };
+  const data = MODEL_IDS.map((id) => ({ type: "model", id, display_name: id, created_at: "2026-10-01T00:00:00Z", max_input_tokens: 1000000, max_tokens: 128000, capabilities: { effort } }));
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ data, has_more: false, first_id: data[0].id, last_id: data.at(-1).id }));
+}
+
 const anthropic = createServer((req, res) => {
+  if (req.method === "GET" && req.url.startsWith("/v1/models")) return modelsList(res);
   let data = "";
   req.on("data", (chunk) => (data += chunk));
   req.on("end", () => {

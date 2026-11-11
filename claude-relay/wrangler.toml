@@ -18,9 +18,22 @@ preview_urls = false
 name = "REGISTRY"
 class_name = "Registry"
 
+# Each reply of /v1/replies (Fielua for the web) in an object of its own,
+# which goes on when Safari drops the page's connection in the background,
+# and keeps the reply in memory only (never in its storage) until the page
+# has it, 10 minutes after it ended at the latest (src/reply.ts). SQLite-
+# backed because that is what the free plan offers; nothing is stored.
+[[durable_objects.bindings]]
+name = "REPLY"
+class_name = "Reply"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Registry"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Reply"]
 
 # Not secret. Changed here and deployed again.
 # CLAUDE_MODEL: the model a chat gets when the app names none (the app
@@ -30,6 +43,11 @@ new_sqlite_classes = ["Registry"]
 [vars]
 CLAUDE_MODEL = "claude-opus-5-5"
 CLAUDE_MAX_TOKENS = "64000"
+# Fielua for the web (https://suelira.com/chat/): the only pages that may
+# call the relay from a browser (CORS), and the domain its passkeys belong
+# to. Web sessions work only from these origins. Empty turns the web off.
+WEB_ORIGINS = "https://suelira.com,https://www.suelira.com"
+WEB_RP_ID = "suelira.com"
 
 # No request logs: conversations and keys never reach Cloudflare's logs.
 [observability]

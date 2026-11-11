@@ -11,6 +11,28 @@ export function isAccessToken(text: string): boolean {
   return /^fcl_[A-Za-z0-9_-]{43}$/.test(text);
 }
 
+/**
+ * A web session token: "fws_" and 32 random bytes in base64url, given to
+ * the browser after a passkey sign-in and kept only as its hash. It works
+ * only from the web app's own origin (WEB_ORIGINS) and lapses after 12 hours.
+ */
+export function newWebSessionToken(): string {
+  return "fws_" + base64url(randomBytes(32));
+}
+
+export function isWebSessionToken(text: string): boolean {
+  return /^fws_[A-Za-z0-9_-]{43}$/.test(text);
+}
+
+export async function webSessionHash(token: string): Promise<string> {
+  return sha256hex("fielua-web-session-v1:" + token);
+}
+
+/** A WebAuthn challenge: 32 random bytes in base64url. */
+export function newChallenge(): string {
+  return base64url(randomBytes(32));
+}
+
 /** Crockford's base32, without I, L, O and U, so a code read aloud or typed is hard to get wrong. */
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -28,6 +50,16 @@ export function normalizeInviteCode(text: string): string | null {
   if (cleaned.length !== 16) return null;
   for (const char of cleaned) if (!CODE_ALPHABET.includes(char)) return null;
   return cleaned;
+}
+
+/**
+ * A person's history key: 32 random bytes in base64url. Fielua for the web
+ * encrypts the conversations it keeps on the person's own device with it, so
+ * they can be read there only after signing in. The relay keeps the key and
+ * never sees a conversation.
+ */
+export function newHistoryKey(): string {
+  return base64url(randomBytes(32));
 }
 
 export function newID(): string {
