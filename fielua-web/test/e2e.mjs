@@ -284,13 +284,13 @@ const relayPort = 18500 + Math.floor(Math.random() * 400);
 // The page reaches the relay over a cable the test can cut, as Safari drops a page's connections in the background.
 const cablePort = 17500 + Math.floor(Math.random() * 400);
 const relay = `http://127.0.0.1:${cablePort}`;
-const cable = { sockets: new Set(), refuse: false, replyGets: 0 };
+const cable = { sockets: new Set(), refuse: false, replyGets: 0, replyStops: 0 };
 cable.cut = () => { for (const socket of cable.sockets) socket.destroy(); };
 const cableServer = createCable((client) => {
   if (cable.refuse) { client.destroy(); return; }
   const far = connect(relayPort, "127.0.0.1");
   cable.sockets.add(client);
-  client.on("data", (chunk) => { if (/^GET \/v1\/replies\/[0-9a-f]{32} /m.test(chunk.toString("latin1"))) cable.replyGets++; });
+  client.on("data", (chunk) => { const text = chunk.toString("latin1"); if (/^GET \/v1\/replies\/[0-9a-f]{32} /m.test(text)) cable.replyGets++; if (/^DELETE \/v1\/replies\/[0-9a-f]{32} /m.test(text)) cable.replyStops++; });
   client.pipe(far).pipe(client);
   const close = () => { cable.sockets.delete(client); client.destroy(); far.destroy(); };
   client.on("error", close).on("close", close);
@@ -405,7 +405,7 @@ if (process.env.STUDIO) {
   let failed = false;
   try {
     const { default: studio } = await import(process.env.STUDIO_SCRIPT ?? "./studio.mjs");
-    await studio({ browser, page0, relay, admin: ADMIN, out: process.env.STUDIO, passkeyDevice, sendMessage, waitReply, swipe, sleep, cable });
+    await studio({ browser, page0, relay, admin: ADMIN, out: process.env.STUDIO, passkeyDevice, sendMessage, waitReply, swipe, sleep, cable, upstream });
   } catch (error) {
     failed = true;
     console.error(error?.stack ?? error);
@@ -623,10 +623,14 @@ try {
   await dev.waitForFunction(() => (document.querySelector(".msg.assistant:last-child .reply")?.textContent.length ?? 0) > 20, null, { timeout: 10000 });
   const before = upstream.closedEarly;
   check("the send button becomes stop while Claude writes", (await dev.getAttribute("#send", "aria-label")) === "停止");
+  const stopsBefore = cable.replyStops;
   await dev.click("#send");
   await waitReply(dev);
-  await sleep(800);
-  check("stop ends the request at Anthropic too", upstream.closedEarly === before + 1, `${upstream.closedEarly - before}`);
+  // (The relay's end of the request closes a moment after the page's: waited for, not timed.)
+  const stoppedAt = Date.now();
+  while (upstream.closedEarly === before && Date.now() - stoppedAt < 6000) await sleep(100);
+  await sleep(300);
+  check("stop ends the request at Anthropic too", upstream.closedEarly === before + 1, `${upstream.closedEarly - before} after ${Date.now() - stoppedAt - 300} ms; the page's DELETE reached the relay ${cable.replyStops - stopsBefore} time(s)`);
   check("what had come stays, marked stopped", (await lastReply(dev).locator(".caption").textContent()).includes("停止しました"));
   check("the composer is ready again", (await dev.getAttribute("#send", "aria-label")) === "送信");
 
@@ -889,7 +893,7 @@ try {
   const shownBefore = await dev.locator(".msg").count();
   const firstReplyText = (await dev.locator(".msg.assistant .reply").first().textContent()).replace(/\s+/g, "").slice(0, 14);
   await dev.click("#history-button");
-  await dev.waitForSelector("#chat.history-shown .history-row");
+  await dev.waitForSelector("#chat.history-shown:not(.history-animating) .history-row");
   await sleep(600);
   const drawerShape = await dev.evaluate(() => ({
     rows: [...document.querySelectorAll(".history-row")].map((row) => ({ title: row.textContent, current: row.getAttribute("aria-current") })),
@@ -949,6 +953,46 @@ try {
   const swipedShut = await panelAt();
   check("a sideways swipe opens the list, and a swipe back on the strip closes it (touch)",
     swipedOpen.shown && swipedOpen.x === 298 && swipedOpen.inert && !swipedShut.shown && swipedShut.x === 0 && !swipedShut.inert, JSON.stringify({ swipedOpen, swipedShut }));
+  // A second finger lands while the first drags (the other thumb, the palm): the list still comes to rest on one side,
+  // never half-way, and never a chat that looks closed but can't be used.
+  const fingers = await dev.context().newCDPSession(dev);
+  const touches = (type, touchPoints) => fingers.send("Input.dispatchTouchEvent", { type, touchPoints });
+  const twoFingers = async (from, to) => {
+    await touches("touchStart", [{ x: from, y: 420, id: 1 }]);
+    for (let i = 1; i <= 6; i++) { await touches("touchMove", [{ x: from + ((to - from) * i) / 6, y: 422, id: 1 }]); await sleep(16); }
+    await touches("touchStart", [{ x: to, y: 422, id: 1 }, { x: 200, y: 700, id: 2 }]);
+    await sleep(60);
+    await touches("touchEnd", [{ x: 200, y: 700, id: 2 }]);
+    await sleep(60);
+    await touches("touchEnd", []);
+    await sleep(700);
+    return panelAt();
+  };
+  const rests = (at) => (at.shown && at.x === 298 && at.inert) || (!at.shown && at.x === 0 && !at.inert);
+  const opening = await twoFingers(30, 250);
+  if (!opening.shown) { await dev.click("#history-button"); await sleep(600); }
+  const closing = await twoFingers(370, 120);
+  if ((await panelAt()).shown) { await dev.click("#history-close"); await sleep(600); }
+  await fingers.detach();
+  check("a second finger during the drag doesn't leave the list half-way (touch)", rests(opening) && rests(closing), JSON.stringify({ opening, closing }));
+  // A second tap right after the button, where the chat still covers the list: the unseen 設定 under it is not pressed.
+  const under = await dev.evaluate(() => {
+    document.getElementById("history-button").click();
+    const gear = document.getElementById("history-settings").getBoundingClientRect();
+    const [x, y] = [gear.left + gear.width / 2, gear.top + gear.height / 2];
+    const hit = document.elementFromPoint(x, y);
+    hit?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, detail: 1 }));
+    return { hit: hit?.closest("button")?.id ?? hit?.id, sheet: document.getElementById("settings-sheet").open };
+  });
+  await sleep(700);
+  const underAfter = await dev.evaluate(() => document.getElementById("settings-sheet").open);
+  await dev.click("#history-settings");
+  const seenGear = await dev.waitForSelector("#settings-sheet[open]", { timeout: 3000 }).then(() => true, () => false);
+  await sleep(700);
+  await dev.click("#settings-sheet .sheet-head button");
+  await settled(dev);
+  if ((await panelAt()).shown) { await dev.click("#history-close"); await sleep(600); }
+  check("while the chat still covers the list, a tap there presses nothing under it; in sight, 設定 opens", under.hit === "history-settings" && !under.sheet && !underAfter && seenGear, JSON.stringify({ under, underAfter, seenGear }));
   await dev.click("#attach");
   await dev.waitForSelector("#attach-menu:not([hidden])");
   const toolRows = await dev.evaluate(() => [...document.querySelectorAll("#attach-menu [data-tool]")].map((row) => `${row.dataset.tool}:${row.hidden ? "hidden" : "shown"}:${row.getAttribute("aria-checked")}`));
@@ -1039,7 +1083,7 @@ try {
 
   // The list after a reload: both conversations, the latest question first; searching their text; opening and deleting.
   await dev.click("#history-button");
-  await dev.waitForSelector("#chat.history-shown .history-row >> nth=1");
+  await dev.waitForSelector("#chat.history-shown:not(.history-animating) .history-row >> nth=1");
   const titles = await dev.locator(".history-row").allTextContents();
   check("both conversations are listed, the one asked last first", titles.length === 2 && titles[0] === "検索" && titles[1] === "md", titles.join(" | "));
   await dev.click("#history-search-button");
@@ -1056,7 +1100,7 @@ try {
   await sleep(600);
   check("opening it from the list brings the conversation back as it was", !(await dev.evaluate(() => document.getElementById("chat").classList.contains("history-shown"))));
   await dev.click("#history-button");
-  await dev.waitForSelector("#chat.history-shown .history-row[aria-current=true]");
+  await dev.waitForSelector("#chat.history-shown:not(.history-animating) .history-row[aria-current=true]");
   await dev.click(".history-row[aria-current=true]", { button: "right" });
   await dev.waitForSelector("#history-menu:not([hidden])");
   await dev.click("#history-delete");
@@ -1070,6 +1114,44 @@ try {
   await dev.click(".history-row >> text=検索");
   await dev.waitForSelector(".msg.assistant .made-file");
   check("the other conversation opens again, its files with it", (await dev.locator(".made-file").count()) === 4);
+
+  // While a reply is being written the other conversations wait; pressed, they say so (silence reads as a page that stopped).
+  await dev.click("#history-button");
+  await dev.waitForSelector("#chat.history-shown:not(.history-animating) .history-row");
+  await dev.click("#history-new");
+  await sleep(600);
+  await sendMessage(dev, "slow");
+  await dev.waitForFunction(() => (document.querySelector(".msg.assistant:last-child .reply")?.textContent.length ?? 0) > 20, null, { timeout: 10000 });
+  await dev.click("#history-button");
+  await dev.waitForSelector('#chat.history-shown:not(.history-animating) .history-row[aria-disabled="true"]');
+  await sleep(500);
+  await dev.click('.history-row[aria-disabled="true"]', { force: true });
+  await dev.waitForSelector("#toast:not([hidden])");
+  const waitingRow = await dev.evaluate(() => ({ note: document.getElementById("toast").textContent, open: document.querySelector('.history-row[aria-current="true"]')?.textContent, shown: document.getElementById("chat").classList.contains("history-shown"), writing: document.getElementById("composer").classList.contains("streaming") }));
+  check("while a reply is written, another conversation's row says why it doesn't open",
+    waitingRow.note.includes("返信が終わるまで") && waitingRow.open === "slow" && waitingRow.shown && waitingRow.writing, JSON.stringify(waitingRow));
+  await dev.evaluate(() => { document.getElementById("toast").hidden = true; });
+  await dev.click("#history-new", { force: true });
+  await dev.waitForSelector("#toast:not([hidden])");
+  check("and so does チャット", (await dev.textContent("#toast")).includes("返信が終わるまで") && (await dev.locator(".msg").count()) === 2);
+  await dev.click("#history-close");
+  await sleep(600);
+  await dev.click("#send");
+  await waitReply(dev);
+  // (This conversation goes again: what follows counts the ones before it.)
+  await dev.click("#history-button");
+  await dev.waitForSelector("#chat.history-shown:not(.history-animating) .history-row[aria-current=true]");
+  await dev.waitForFunction(() => !document.querySelector('.history-row[aria-disabled="true"]'));
+  await dev.click(".history-row[aria-current=true]", { button: "right" });
+  await dev.waitForSelector("#history-menu:not([hidden])");
+  await dev.click("#history-delete");
+  await dev.waitForSelector("#confirm[open]");
+  await dev.click("#confirm-ok");
+  await settled(dev);
+  await dev.waitForFunction(() => document.querySelectorAll(".history-row").length === 1, null, { timeout: 5000 });
+  await dev.click(".history-row >> text=検索");
+  await dev.waitForSelector(".msg.assistant .made-file");
+  await sleep(600);
 
   // MARK: Two tabs, one history
   {
@@ -1087,7 +1169,7 @@ try {
     check("what one tab adds to a conversation shows in the other, which then can't write an older copy over it", followed, `${before} → ${await dev.locator(".msg").count()}`);
     const staleCopy = await dev.evaluate(() => sessionStorage.getItem("fielua.chat"));
     await tab2.click("#history-button");
-    await tab2.waitForSelector("#chat.history-shown .history-row[aria-current=true]");
+    await tab2.waitForSelector("#chat.history-shown:not(.history-animating) .history-row[aria-current=true]");
     await tab2.click(".history-row[aria-current=true]", { button: "right" });
     await tab2.click("#history-delete");
     await tab2.click("#confirm-ok");

@@ -1446,10 +1446,16 @@ function forgetReply(run) {
 
 function dropReply(key, token) {
   const send = () => call(`/v1/replies/${key}`, { method: "DELETE", ...(token ? { token } : {}) });
-  return send().then(() => {}, () => {
+  // The stop has to get there (a reply not stopped is written on, and paid for): one that was lost on
+  // the way, or that the relay was too busy for, is asked again a few times, each a little later.
+  const attempt = (waits) => send().then((response) => response.status === 429 || response.status >= 500, () => true).then((again) => {
+    if (!again) return undefined;
     // No connection now: once more when there is one (else the relay lets it go by itself, within 40 minutes).
-    if (navigator.onLine === false) addEventListener("online", () => { send().catch(() => {}); }, { once: true });
+    if (navigator.onLine === false) { addEventListener("online", () => { attempt([1500]); }, { once: true }); return undefined; }
+    if (!waits.length) return undefined;
+    return new Promise((resolve) => { setTimeout(resolve, waits[0]); }).then(() => attempt(waits.slice(1)));
   });
+  return attempt([500, 1500, 4000]);
 }
 
 function newReplyKey() {
@@ -2790,9 +2796,15 @@ async function deleteChat(id, title) {
     showChat(blankChat());
   }
   await renderHistory();
-  const next = $("history-list").querySelector(".history-row:not(:disabled)");
+  const next = $("history-list").querySelector(HISTORY_ROW_ON);
   (next ?? $("history-new")).focus({ preventScroll: true });
 }
+
+/** While a reply is being written the other conversations wait: their rows stay on the page (pressed, they say why) but open nothing. */
+const HISTORY_ROW_ON = '.history-row:not([aria-disabled="true"])';
+const rowWaits = (row) => row.getAttribute("aria-disabled") === "true";
+/** Pressed anyway: why nothing opened (silence reads as a page that has stopped). */
+const sayBusy = () => toast("返信が終わるまで、ほかの会話は開けません。");
 
 /** Whether the list can be seen now (open on a phone, or beside the chat). */
 const historyShown = () => !$("chat").hidden && (docked() || (!wide.matches && $("chat").classList.contains("history-shown")));
@@ -2808,7 +2820,7 @@ function renderHistory() {
 }
 
 async function drawHistory(ticket) {
-  $("history-new").disabled = !!state.streaming;
+  $("history-new").setAttribute("aria-disabled", state.streaming ? "true" : "false");
   if (!historyShown()) return true;
   const list = $("history-list");
   const empty = $("history-empty");
@@ -2842,7 +2854,7 @@ async function drawHistory(ticket) {
       const current = item.id === state.chat.id;
       const row = h("button", {
         type: "button", class: "history-row", text: item.title, "aria-label": `会話を開く: ${item.title}`,
-        "aria-current": current ? "true" : null, disabled: busy && !current, dataset: { id: item.id },
+        "aria-current": current ? "true" : null, "aria-disabled": busy && !current ? "true" : null, dataset: { id: item.id },
       });
       return h("li", {}, row);
     }));
@@ -2919,7 +2931,7 @@ function setDrawer(open, { animate = true, focus = true, ms = 400 } = {}) {
       drawn.then(() => {
         if (!drawer.open || history.contains(document.activeElement)) return;
         const rows = $("history-list");
-        (rows.querySelector('[aria-current="true"]') ?? rows.querySelector(".history-row:not(:disabled)") ?? $("history-new")).focus({ preventScroll: true });
+        (rows.querySelector('[aria-current="true"]') ?? rows.querySelector(HISTORY_ROW_ON) ?? $("history-new")).focus({ preventScroll: true });
       });
     }
   }
@@ -3020,7 +3032,7 @@ function wireHistory() {
   const list = $("history-list");
   $("history-button").addEventListener("click", () => setDrawer(wide.matches ? !docked() : true));
   $("history-close").addEventListener("click", () => setDrawer(false));
-  $("history-new").addEventListener("click", startNewChat);
+  $("history-new").addEventListener("click", () => (state.streaming ? sayBusy() : startNewChat()));
   $("history-settings").addEventListener("click", () => openSheet("settings-sheet"));
   $("history-search-button").addEventListener("click", () => (drawer.searching ? endSearch() : startSearch()));
   $("history-query").addEventListener("input", (event) => {
@@ -3030,7 +3042,7 @@ function wireHistory() {
   $("history-query").addEventListener("keydown", (event) => {
     // (Enter and Escape that belong to a Japanese conversion are the keyboard's own.)
     if (event.isComposing || event.keyCode === 229) return;
-    const first = list.querySelector(".history-row:not(:disabled)");
+    const first = list.querySelector(HISTORY_ROW_ON);
     if (event.key === "Enter") {
       event.preventDefault();
       // With a keyboard, on to what was found; on a phone, the keyboard goes away.
@@ -3043,6 +3055,14 @@ function wireHistory() {
   walkWithArrows(list, ".history-row");
   $("history-scroll").addEventListener("scroll", () => { closeRowMenu(); if (document.activeElement === $("history-query")) $("history-query").blur(); }, { passive: true });
 
+  // While the chat still slides aside, the part of the list under it is not there to be pressed
+  // (the chat over it is inert already, and a second tap meant for the chat would open what it can't see).
+  $("history").addEventListener("click", (event) => {
+    if (wide.matches || !event.detail || event.clientX < $("chat-panel").getBoundingClientRect().left) return;
+    event.stopPropagation();
+    event.preventDefault();
+  }, true);
+
   // A row: a tap opens it; a long press (or the right button, or the menu key) opens its menu.
   let press = null;
   let pressed = false;
@@ -3050,17 +3070,18 @@ function wireHistory() {
     const row = event.target.closest(".history-row");
     if (!row) return;
     if (pressed) { pressed = false; event.preventDefault(); return; }
+    if (rowWaits(row)) { sayBusy(); return; }
     openChat(row.dataset.id);
   });
   list.addEventListener("contextmenu", (event) => {
     const row = event.target.closest(".history-row");
     if (!row) return;
     event.preventDefault();
-    if (!row.disabled) openRowMenu(row);
+    if (!rowWaits(row)) openRowMenu(row);
   });
   list.addEventListener("keydown", (event) => {
     const row = event.target.closest(".history-row");
-    if (row && (event.key === "Delete" || event.key === "Backspace") && !row.disabled) {
+    if (row && (event.key === "Delete" || event.key === "Backspace") && !rowWaits(row)) {
       event.preventDefault();
       deleteChat(row.dataset.id, row.textContent);
     }
@@ -3068,9 +3089,9 @@ function wireHistory() {
   list.addEventListener("pointerdown", (event) => {
     const row = event.target.closest(".history-row");
     pressed = false;
-    if (!row || event.pointerType === "mouse" || row.disabled) return;
+    if (!row || event.pointerType === "mouse" || rowWaits(row)) return;
     clearTimeout(press?.timer);
-    press = { x: event.clientX, y: event.clientY, timer: setTimeout(() => { pressed = true; press = null; openRowMenu(row); }, 500) };
+    press = { x: event.clientX, y: event.clientY, timer: setTimeout(() => { press = null; if (!row.isConnected) return; pressed = true; openRowMenu(row); }, 500) };
   });
   const cancelPress = (event) => {
     if (!press) return;
@@ -3097,9 +3118,22 @@ function wireHistory() {
   // following the finger; let go, it goes where the finger was heading (the app's HistoryDrawerPan).
   let drag = null;
   const reveal = () => Number.parseFloat(chat.style.getPropertyValue("--reveal")) || 0;
-  chat.addEventListener("pointerdown", (event) => {
+  /** A drag whose finger went without a word (or was taken away): the list goes to the nearer side, never left half-way. */
+  const abandon = () => {
+    const ended = drag;
     drag = null;
-    if (event.pointerType !== "touch" || wide.matches) return;
+    if (ended?.active) setDrawer(reveal() > 0.5, { focus: false });
+  };
+  chat.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch") { abandon(); return; }
+    if (drag && event.pointerId !== drag.id && !event.isPrimary) {
+      // A second finger: a drag under way goes on with the first; one not begun is a pinch, not a drag.
+      if (!drag.active) drag = null;
+      return;
+    }
+    // (A new first finger while a drag was under way: the browser never said the old one ended.)
+    abandon();
+    if (wide.matches) return;
     if (document.querySelector("dialog[open]") || !$("attach-menu").hidden) return;
     // Not where something scrolls sideways itself (tables, code, a long formula, the attachments), nor in a text field.
     if (event.target.closest(".fl-table-scroll, pre, .fl-math.display, .katex-display, .tray, .tool-pills, textarea, input, .row-menu")) return;
@@ -3147,8 +3181,12 @@ function wireHistory() {
   };
   chat.addEventListener("pointerup", letGo);
   chat.addEventListener("pointercancel", letGo);
+  // The finger was taken from the page without an end (another gesture, another app, the screen turned).
+  // (Heard from the chat itself only: the touched node below gives its own capture up to the chat when the drag begins.)
+  chat.addEventListener("lostpointercapture", (event) => { if (event.target === chat && drag?.active && event.pointerId === drag.id) abandon(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) abandon(); });
 
-  wide.addEventListener("change", () => { closeRowMenu(); applyDock(false); });
+  wide.addEventListener("change", () => { drag = null; closeRowMenu(); applyDock(false); });
   // Another tab of this page changed the history: this one follows.
   archive.onChange((change) => { followOtherTab(change); });
 }

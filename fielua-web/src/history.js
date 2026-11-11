@@ -121,6 +121,11 @@ export function lock() {
   db = null;
 }
 
+/** How long IndexedDB may take to answer. Safari has left a request unanswered before (a page back from the background):
+ *  waited for for ever, a pressed conversation would simply never open. Past this it counts as failed, and is tried once more. */
+const ANSWER_MS = 8000;
+const unanswered = () => new DOMException("IndexedDB did not answer.", "UnknownError");
+
 function database() {
   if (!owner) return Promise.reject(locked());
   if (db) return Promise.resolve(db);
@@ -139,8 +144,12 @@ function database() {
       const opened = request.result;
       for (const store of STORES) if (!opened.objectStoreNames.contains(store)) opened.createObjectStore(store, { keyPath: "id" });
     };
+    let given = false;
+    const late = setTimeout(() => { given = true; reject(unanswered()); }, ANSWER_MS);
     request.onsuccess = () => {
+      clearTimeout(late);
       const opened = request.result;
+      if (given) { opened.close(); return; }
       if (started !== generation) {
         opened.close();
         reject(locked());
@@ -161,8 +170,8 @@ function database() {
       db = opened;
       resolve(opened);
     };
-    request.onerror = () => reject(request.error ?? new DOMException("IndexedDB failed.", "UnknownError"));
-    request.onblocked = () => reject(new DOMException("Another tab holds the history.", "InvalidStateError"));
+    request.onerror = () => { clearTimeout(late); reject(request.error ?? new DOMException("IndexedDB failed.", "UnknownError")); };
+    request.onblocked = () => { clearTimeout(late); reject(new DOMException("Another tab holds the history.", "InvalidStateError")); };
   });
   opening = pending;
   pending.then(() => { if (opening === pending) opening = null; }, () => { if (opening === pending) opening = null; });
@@ -179,12 +188,13 @@ async function transact(mode, stores, work) {
       return await new Promise((resolve, reject) => {
         const tx = opened.transaction(stores, mode);
         let result;
+        const late = setTimeout(() => { reject(unanswered()); try { tx.abort(); } catch { /* over */ } }, ANSWER_MS);
         const request = work(tx);
         if (request) request.onsuccess = () => { result = request.result; };
-        tx.oncomplete = () => resolve(result);
+        tx.oncomplete = () => { clearTimeout(late); resolve(result); };
         // The failed request's own error (the transaction's is set only later, when it aborts): QuotaExceededError stays one.
-        tx.onerror = (event) => reject(event.target?.error ?? tx.error ?? new DOMException("IndexedDB failed.", "UnknownError"));
-        tx.onabort = () => reject(tx.error ?? new DOMException("IndexedDB stopped.", "AbortError"));
+        tx.onerror = (event) => { clearTimeout(late); reject(event.target?.error ?? tx.error ?? new DOMException("IndexedDB failed.", "UnknownError")); };
+        tx.onabort = () => { clearTimeout(late); reject(tx.error ?? new DOMException("IndexedDB stopped.", "AbortError")); };
       });
     } catch (error) {
       if (attempt === 0 && (error?.name === "UnknownError" || error?.name === "InvalidStateError") && started === generation) {

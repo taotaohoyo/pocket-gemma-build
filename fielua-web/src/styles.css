@@ -230,7 +230,7 @@ svg { display: block; }
 :is(.primary, .secondary, .text, .icon-button, .glass-circle, .history-new, .model-button, .credit, .jump, .send, .attach, .tool-pill, .fl-copy, .fl-more, .toast-action, .tray-remove, .sent-picture, .download) {
   transition: scale var(--press-ms) var(--press), background-color 0.2s var(--ease-out), opacity 0.2s var(--ease-out), filter 0.2s var(--ease-out), color 0.2s var(--ease-out);
 }
-:is(.primary, .secondary, .history-new, .sent-picture):active:not(:disabled) { scale: 0.97; transition-duration: 0.12s; transition-timing-function: var(--ease-out); }
+:is(.primary, .secondary, .history-new, .sent-picture):active:not(:disabled, [aria-disabled="true"]) { scale: 0.97; transition-duration: 0.12s; transition-timing-function: var(--ease-out); }
 :is(.icon-button, .glass-circle, .credit, .jump, .send, .attach, .tool-pill, .toast-action, .tray-remove, .download):active:not(:disabled) { scale: 0.92; transition-duration: 0.12s; transition-timing-function: var(--ease-out); }
 :is(.text, .fl-copy, .fl-more):active:not(:disabled) { opacity: 0.5; transition-duration: 0.08s; }
 .secondary:active:not(:disabled) { background: var(--selection); }
@@ -239,7 +239,7 @@ svg { display: block; }
   .icon-button:hover, .model-button:hover { background: var(--chip); }
   .topbar .icon-button:hover { background: var(--glass); filter: brightness(0.97); }
   .secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 10%, transparent); }
-  .primary:hover:not(:disabled), .history-new:hover:not(:disabled) { filter: brightness(1.03); }
+  .primary:hover:not(:disabled), .history-new:hover:not([aria-disabled="true"]) { filter: brightness(1.03); }
   .text:hover:not(:disabled), .fl-copy:hover, .fl-more:hover { color: var(--ink); }
   .text.danger:hover:not(:disabled) { color: var(--danger); opacity: 0.8; }
   .glass-circle:hover { background: color-mix(in srgb, var(--card) 92%, transparent); }
@@ -1086,10 +1086,10 @@ body:has(#login:not([hidden]):not(.leaving)) .toast { top: calc(var(--safe-top) 
   -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
 }
 .history-row[aria-current="true"], .history-row.menu-open { background: var(--selection); }
-.history-row:active:not(:disabled) { background: var(--selection); }
-.history-row:disabled { opacity: 0.4; cursor: default; }
+.history-row:active:not([aria-disabled="true"]) { background: var(--selection); }
+.history-row[aria-disabled="true"] { opacity: 0.4; cursor: default; }
 @media (hover: hover) {
-  .history-row:hover:not(:disabled):not([aria-current="true"]) { background: color-mix(in srgb, var(--selection) 55%, transparent); }
+  .history-row:hover:not([aria-disabled="true"]):not([aria-current="true"]) { background: color-mix(in srgb, var(--selection) 55%, transparent); }
 }
 .history-empty { margin: 12px 0 0; padding-left: 33px; color: var(--secondary); font-size: 17px; }
 
@@ -1104,8 +1104,8 @@ body:has(#login:not([hidden]):not(.leaving)) .toast { top: calc(var(--safe-top) 
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 1px 2px rgba(120, 80, 0, 0.12);
 }
 .history-new svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.history-new:disabled { opacity: 0.5; cursor: default; }
-.history-new:active:not(:disabled) { filter: brightness(0.96); }
+.history-new[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.history-new:active:not([aria-disabled="true"]) { filter: brightness(0.96); }
 
 /* A row's menu (long press, or the right button): one item, 削除, as the app's. */
 .row-menu {
