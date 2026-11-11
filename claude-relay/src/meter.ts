@@ -178,8 +178,14 @@ export function readReply(bytes: Uint8Array, requestedModel: string, wantOutputs
   return { micros: costMicros(model, { ...usage, output_tokens: output }), outputs };
 }
 
-/** `wantOutputs`: code could run (files on), so the whole reply is searched for the files it made. */
-export function meter(source: ReadableStream<Uint8Array>, requestedModel: string, signal?: AbortSignal, wantOutputs = true): Metered {
+/**
+ * `wantOutputs`: code could run (files on), so the whole reply is searched for the files it made.
+ * `kept`: a reply of /v1/replies (reply.ts), which the app's connection doesn't end: its stop is
+ * `signal` alone, and the app's copy is passed on as the runtime split it, for the keeper to split
+ * again. (In workerd a split IdentityTransformStream can't be piped on: "Inter-TransformStream
+ * ReadableStream.pipeTo() is not implemented", and that copy is then never read nor let go.)
+ */
+export function meter(source: ReadableStream<Uint8Array>, requestedModel: string, signal?: AbortSignal, wantOutputs = true, kept = false): Metered {
   const [toApp, copy] = source.tee();
   // The copy ends when the app's connection does (the request's signal, or
   // its copy cancelled): both copies gone, the request to Anthropic ends too.
@@ -187,7 +193,7 @@ export function meter(source: ReadableStream<Uint8Array>, requestedModel: string
   signal?.addEventListener("abort", () => stop.abort(), { once: true });
   let body = toApp;
   const Identity = (globalThis as { IdentityTransformStream?: typeof IdentityTransformStream }).IdentityTransformStream;
-  if (Identity) {
+  if (Identity && !kept) {
     const pass = new Identity();
     toApp.pipeTo(pass.writable).catch(() => stop.abort());
     body = pass.readable;

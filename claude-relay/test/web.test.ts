@@ -601,7 +601,8 @@ describe("a reply a dropped connection doesn't end", () => {
     const { timers: timers2, pass: pass2, pending: pending2, now: now2 } = handTimers();
     const old = new ReplyKeeper(timers2, now2);
     const signal = old.begin("u1", KEY)!;
-    void readAll(old.hold(writtenByHand().stream, {}));
+    // The page's copy ends with the stop (an error: it is cut off).
+    readAll(old.hold(writtenByHand().stream, {})).catch(() => {});
     pass2(29 * MINUTE);
     expect(signal.aborted).toBe(false);
     pass2(1 * MINUTE);
@@ -614,7 +615,7 @@ describe("a reply a dropped connection doesn't end", () => {
     const { timers, pending, now } = handTimers();
     const stopped = new ReplyKeeper(timers, now);
     const signal = stopped.begin("u1", KEY)!;
-    void readAll(stopped.hold(writtenByHand().stream, {}));
+    readAll(stopped.hold(writtenByHand().stream, {})).catch(() => {});
     expect(stopped.end("u2")).toBe(false);
     expect(signal.aborted).toBe(false);
     expect(stopped.end("u1")).toBe(true);
@@ -641,13 +642,31 @@ describe("a reply a dropped connection doesn't end", () => {
     await settle();
     // The page's connection goes (its 停止 ends its own request first): the reply is still kept, still read.
     // (A split stream's cancel settles only once every copy is cancelled: not waited for.)
-    void live.cancel();
+    live.cancel().catch(() => {});
     await settle();
     expect(letGo).toBe(false);
     expect(keeper.end("u1")).toBe(true);
     await settle();
     await settle();
     expect(letGo).toBe(true);
+  });
+
+  it("stopped while the page's connection is still open: its copy ends too, and the stream is let go", async () => {
+    const { timers, now } = handTimers();
+    const keeper = new ReplyKeeper(timers, now);
+    keeper.begin("u1", KEY);
+    let letGo = false;
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const anthropic = new ReadableStream<Uint8Array>({ start: (c) => { controller = c; }, cancel: () => { letGo = true; } });
+    const reader = keeper.hold(anthropic, {}).getReader();
+    controller.enqueue(encoder.encode("event: message_start\n"));
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("event: message_start\n");
+    // The DELETE comes before the page's own request has gone (or it never goes).
+    expect(keeper.end("u1")).toBe(true);
+    await settle();
+    await settle();
+    expect(letGo).toBe(true);
+    await expect(reader.read()).rejects.toThrow();
   });
 
   it("is asked at /v1/replies/:key: checked at the edge, then kept, and never stopped by the page's connection", async () => {

@@ -635,6 +635,7 @@ try {
   while (upstream.closedEarly === before && Date.now() - stoppedAt < 6000) await sleep(100);
   await sleep(300);
   check("stop ends the request at Anthropic too", upstream.closedEarly === before + 1, `${upstream.closedEarly - before} after ${Date.now() - stoppedAt - 300} ms; the page's DELETE reached the relay ${cable.replyStops - stopsBefore} time(s)`);
+  if (upstream.closedEarly !== before + 1) console.log("  relay log:\n" + relayLog.split("\n").filter((line) => /replies|messages|error|Error/.test(line)).slice(-12).map((line) => `    ${line}`).join("\n"));
   check("what had come stays, marked stopped", (await lastReply(dev).locator(".caption").textContent()).includes("停止しました"));
   check("the composer is ready again", (await dev.getAttribute("#send", "aria-label")) === "送信");
 

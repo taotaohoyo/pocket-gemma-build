@@ -386,7 +386,7 @@ async function messages(request: Request, ctx: Context): Promise<Response> {
   if (stream && (counting || tools.files)) {
     // Only the usage is read, for the estimate of the credit left, and the
     // ids of the files code execution made, so they are this person's alone.
-    const metered = meter(stream, chosen.choice.model.id, signal, tools.files);
+    const metered = meter(stream, chosen.choice.model.id, signal, tools.files, keeper !== null);
     stream = metered.body;
     if (counting) deps.waitUntil?.(metered.cost.then((micros) => deps.registry.addSpend(micros)));
     if (tools.files) {

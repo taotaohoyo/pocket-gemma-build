@@ -115,9 +115,15 @@ export class ReplyKeeper {
       run.lingerUntil = this.now() + this.lingerMs;
       this.tick(run);
     });
-    // Sent as it is: a broken connection to the page cancels only this copy. (Not through
-    // an IdentityTransformStream after meter.ts's: in workerd that copy then stalls.)
-    return live;
+    // The page's copy, passed through so the stop ends it too, whether or not the page's
+    // connection has gone yet: with every copy let go, the runtime lets go of Anthropic's stream,
+    // and the request to Anthropic ends. A broken connection to the page ends only this copy.
+    // (In workerd, natively: IdentityTransformStream; the stream must not have been through one
+    // before, which meter.ts sees to.)
+    const Identity = (globalThis as { IdentityTransformStream?: typeof IdentityTransformStream }).IdentityTransformStream;
+    const pass: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> } = Identity ? new Identity() : new TransformStream<Uint8Array, Uint8Array>();
+    live.pipeTo(pass.writable, { signal: run.stop.signal }).catch(() => {});
+    return pass.readable;
   }
 
   /**
