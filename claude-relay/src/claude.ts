@@ -39,15 +39,16 @@ export interface ModelInfo {
 }
 
 /**
- * The models a person may choose, in the order Fielua shows them (Opus 5.5,
- * the default, first). Checked against Anthropic's models overview and
+ * The models a person may choose, in the order Fielua shows them: Fable 5.2
+ * above Opus 5.5, so it doesn't look like the lighter one (Hachimoto さん,
+ * 2026-11-11). Opus 5.5 stays the default (DEFAULT_MODEL). Checked against Anthropic's models overview and
  * effort pages on 2026-11-06, and Claude Fable 5.2 against its migration
  * guide on 2026-11-10: every one takes low to max; Fielua leaves max out.
  * Anything not here is refused.
  */
 export const MODELS: readonly ModelInfo[] = [
-  { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", fallback: true },
   { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: EFFORTS, defaultEffort: "high", fallback: true },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: EFFORTS, defaultEffort: "medium", fallback: true },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: EFFORTS, defaultEffort: "high", fallback: true },
   { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: EFFORTS, defaultEffort: "medium", fallback: false },
   // Claude Fable 5.2 took its place on 2026-11-10 (Anthropic still serves it).

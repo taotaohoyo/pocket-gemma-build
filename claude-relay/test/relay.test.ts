@@ -114,8 +114,8 @@ describe("access tokens", () => {
       name: "開発者", role: "developer", available: true, reason: null,
       model: "claude-opus-5-5", modelName: "Claude Opus 5.5", effort: "medium",
       models: [
-        { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
         { id: "claude-fable-5-2", name: "Claude Fable 5.2", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
+        { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
         { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
         { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" },
       ],
@@ -323,7 +323,7 @@ describe("what a reply may carry", () => {
 
   it("every model in the catalog takes 低 to 超高, and only those", () => {
     const cfg = config({ ANTHROPIC_API_KEY: "k" })!;
-    expect(MODELS.map((m) => m.id)).toEqual(["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
+    expect(MODELS.map((m) => m.id)).toEqual(["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
     expect(MODELS.filter((m) => m.former).map((m) => m.id)).toEqual(["claude-fable-5-1"]);
     for (const model of MODELS) {
       expect(model.efforts).toEqual(["low", "medium", "high", "xhigh"]);

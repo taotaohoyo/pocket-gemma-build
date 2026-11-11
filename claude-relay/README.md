@@ -12,7 +12,7 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
 
 | | |
 |---|---|
-| 選べるモデル | Claude Opus 5.5（`claude-opus-5-5`）、Fable 5.2（`claude-fable-5-2`）、Sonnet 5.5（`claude-sonnet-5-5`）、Haiku 5.5（`claude-haiku-5-5`）。この 4 つ以外は断ります（`src/claude.ts` の `MODELS`）。Fable 5.1（`claude-fable-5-1`）は 5.2 に置き換えたので一覧に出しませんが、5.1 で始めた iPhone のチャットは続けられます |
+| 選べるモデル | この順に Claude Fable 5.2（`claude-fable-5-2`）、Opus 5.5（`claude-opus-5-5`、最初に選ばれているモデル）、Sonnet 5.5（`claude-sonnet-5-5`）、Haiku 5.5（`claude-haiku-5-5`）。この 4 つ以外は断ります（`src/claude.ts` の `MODELS`）。Fable 5.1（`claude-fable-5-1`）は 5.2 に置き換えたので一覧に出しませんが、5.1 で始めた iPhone のチャットは続けられます |
 | 推論レベル | 低・中・高・超高（`low`・`medium`・`high`・`xhigh`）。毎回 `output_config.effort` で明示して送ります。`max` は選べません |
 | 選ばなかったとき | `claude-opus-5-5`（`wrangler.toml` の `CLAUDE_MODEL`）を、そのモデルの標準のレベルで |
 | 1 回の返事の上限 | 低 16,000・中 32,000・高と超高 64,000 トークン。`CLAUDE_MAX_TOKENS`（64,000）を超えません |
