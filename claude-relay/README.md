@@ -37,6 +37,7 @@ Fielua から Claude（Anthropic の公式 API）を使うための中継サー�
 同じ中継サーバーが、Fielua の Web 版（`../fielua-web/`）も受け付けます。
 
 - ブラウザから呼べるのは `wrangler.toml` の `WEB_ORIGINS`（`https://suelira.com`、`https://www.suelira.com`）のページだけです（CORS）。空にすると Web 版は止まります。
+- 招待のページ（`/join#コード`）では、「iPhone の Fielua アプリで登録」と「Web 版 Fielua（ブラウザ）で登録」を選べます。Web 版のページは `WEB_APP_URL`（`https://suelira.com/chat/`、`WEB_ORIGINS` のどれかの上だけ）で、コードはそのページの `#invite=` の後ろに付けて渡します。空ならアプリだけです。招待はどちらか一方で 1 回だけ使えます。
 - Web 版のログインはパスキーです（`/web/passkey/…`、RP ID は `WEB_RP_ID` の `suelira.com`、ユーザー確認つき）。中継サーバーが署名を確かめ、12 時間のセッション（`fws_`、ハッシュだけを保存）を渡します。開発者の操作は、ログインから 15 分を過ぎるともう一度パスキーを求めます。
 - iPhone がなくても、Web の「開発者の初期設定」で管理キー（`ADMIN_TOKEN`）を一度入れて、開発者として登録できます。
 - 写真（JPEG・PNG・GIF・WebP）、PDF、テキストファイルを、本人の発言に付けて送れます（`src/turns.ts`）。中継サーバーは先頭のバイトで種類を確かめ、Anthropic への本文に base64 をそのまま差し込みます（作り直さないので CPU をほとんど使いません）。1 回に送れる量は `ATTACHMENT_MB`（無料プランの 10 ms に収まる 3 が標準。Workers Paid なら 20 まで上げられます）。

@@ -164,6 +164,9 @@ try {
   check("admin routes refuse a wrong key", (await api("GET", "/admin/state", { token: "wrong" })).status === 401);
   const made = await (await api("POST", "/admin/invites", { token: ADMIN, body: { name: "開発者", role: "developer" } })).json();
   check("an invite link carries the code after #", made.link === `${relay}/join#${made.code}`);
+  const page = await (await fetch(`${relay}/join`)).text();
+  check("its page offers the iPhone app or Fielua for the web", page.includes("iPhone の Fielua アプリで登録") &&
+    page.includes('id="web"') && page.includes('"https://suelira.com/chat/" + "#invite="'));
   const redeemed = await api("POST", "/v1/redeem", { body: { code: made.code } });
   const { token } = await redeemed.json();
   check("the invite gives an access token", redeemed.status === 200 && /^fcl_/.test(token));

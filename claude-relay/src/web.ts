@@ -39,6 +39,21 @@ export function webConfig(env: { WEB_ORIGINS?: string; WEB_RP_ID?: string }): We
   return { rpID, origins, rpName: "Fielua" };
 }
 
+/**
+ * Fielua for the web's own page (WEB_APP_URL, e.g. https://suelira.com/chat/),
+ * where the invite page sends a person who registers in the browser: only
+ * on one of WEB_ORIGINS, without a query or a fragment. Null hides that
+ * choice (the web is off, or the address is not the web's).
+ */
+export function webAppURL(env: { WEB_APP_URL?: string }, web: WebConfig | null): string | null {
+  if (!web || !env.WEB_APP_URL) return null;
+  let url: URL;
+  try { url = new URL(env.WEB_APP_URL.trim()); } catch { return null; }
+  if (url.search || url.hash || url.username || url.password) return null;
+  if (!web.origins.includes(url.origin)) return null;
+  return url.origin + url.pathname;
+}
+
 const TIMEOUT_MS = 120_000;
 
 export async function webRoutes(request: Request, path: string, ctx: Context): Promise<Response> {

@@ -41,7 +41,7 @@ import {
 } from "./security";
 import { attachmentLimits, parseTurns, readJSON, type Turn } from "./turns";
 import type { StoredKey } from "./webauthn";
-import { webConfig, webRoutes, type WebConfig } from "./web";
+import { webConfig, webRoutes, type WebConfig, webAppURL } from "./web";
 
 /** The registry as the handler reaches it: the Durable Object's methods over RPC, or RegistryCore in the tests. */
 export interface RegistryAPI {
@@ -84,6 +84,8 @@ export interface RelayEnv {
   ANTHROPIC_BASE_URL?: string;
   /** Where Fielua for the web runs, comma-separated ("https://suelira.com,https://www.suelira.com"). */
   WEB_ORIGINS?: string;
+  /** Fielua for the web's page, offered on the invite page beside the app (webAppURL). */
+  WEB_APP_URL?: string;
   /** The web app's passkeys are for this domain ("suelira.com"). */
   WEB_RP_ID?: string;
   /** How many MB of photos and PDFs one request may carry (3 on the free plan; turns.ts). */
@@ -173,7 +175,7 @@ export async function handle(request: Request, env: RelayEnv, deps: Deps): Promi
 async function route(request: Request, ctx: Context): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (request.method === "GET" && path === "/join") return joinPage();
+  if (request.method === "GET" && path === "/join") return joinPage(webAppURL(ctx.env, ctx.web));
   if (path.startsWith("/v1/")) {
     if (request.method === "GET" && path === "/v1/status") return await status(request, ctx);
     if (request.method === "POST" && path === "/v1/redeem") return await redeem(request, ctx.deps);
