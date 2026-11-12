@@ -61,7 +61,7 @@ jobs:
           for lang in en ja ko zh-Hans zh-Hant; do
             plutil -p "$app/$lang.lproj/InfoPlist.strings" 2>/dev/null | grep NSFaceIDUsageDescription || echo "FACEID-TEXT missing in $lang"
           done
-          # The app icon (1.1.0 (266) glass, 1.1.0 (267) baked): PocketGemma/AppIcon.icon
+          # The app icon (1.1.0 (267): AppIcon.appiconset, look A as a picture)
           # compiled into the catalog and named by Info.plist; the small
           # rendition into the log (ICON_IMG lines) to look at.
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$app/Info.plist" || echo "APP-ICON-PLIST missing"
