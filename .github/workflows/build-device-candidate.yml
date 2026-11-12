@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           bash scripts/build-ios.sh 2>&1 | tee build/device-ipa-build.log
           mkdir -p build/device-candidate
-          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.1.0-265.ipa
+          cp build/PocketGemma-unsigned.ipa build/device-candidate/PocketGemma-1.1.0-266.ipa
           cp build/DerivedData/Build/Products/Release-iphoneos/PocketGemma.app/runtime-build.json build/device-candidate/runtime-build-device.json
           # The microphone's words (1.1.0 (236)): without them iOS ends the app
           # when it records; each language's from InfoPlist.xcstrings.
@@ -61,6 +61,13 @@ jobs:
           for lang in en ja ko zh-Hans zh-Hant; do
             plutil -p "$app/$lang.lproj/InfoPlist.strings" 2>/dev/null | grep NSFaceIDUsageDescription || echo "FACEID-TEXT missing in $lang"
           done
+          # The Liquid Glass app icon (1.1.0 (266)): PocketGemma/AppIcon.icon
+          # compiled into the catalog and named by Info.plist; the small
+          # rendition into the log (ICON_IMG lines) to look at.
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$app/Info.plist" || echo "APP-ICON-PLIST missing"
+          xcrun assetutil --info "$app/Assets.car" | python3 -c "import json,sys; a=json.load(sys.stdin); print('APP-ICON-CAR', sorted({(str(x.get('AssetType')), str(x.get('Name'))) for x in a[1:] if 'AppIcon' in str(x.get('Name', ''))}))" || echo "APP-ICON-CAR unreadable"
+          ls "$app" | grep -i appicon || echo "APP-ICON-FILES none"
+          if [ -f "$app/AppIcon60x60@2x.png" ]; then base64 -i "$app/AppIcon60x60@2x.png" | tr -d '\n' | fold -w 8000 | awk '{print "ICON_IMG app-icon-60x2", NR-1, $0}'; fi
           # 1.1.0 (251): the app's folders are not shared with the Files app
           # (no UIFileSharingEnabled / LSSupportsOpeningDocumentsInPlace).
           python3 - "$app/Info.plist" <<'PY'
@@ -72,9 +79,9 @@ jobs:
           PY
           python3 - <<'PY'
           import hashlib,json,pathlib
-          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.1.0-265.ipa'
+          root=pathlib.Path('build/device-candidate'); ipa=root/'PocketGemma-1.1.0-266.ipa'
           (root/(ipa.name+'.sha256')).write_text(hashlib.sha256(ipa.read_bytes()).hexdigest()+'  '+ipa.name+'\n')
-          result={'candidate':'1.1.0 (265)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
+          result={'candidate':'1.1.0 (266)','minimumIOS':'26.4','ipaBuild':'passed','ipaStructure':'passed',
               'priorCandidateSimulatorInference':{'candidate':'1.0.15 (16)','run':38638840490,'passed':4,'failed':12,'skipped':0,
                   'failure':'Apple none-mode RuntimeProxy null builtin; source fix now imports provider C entry point'},
               'currentCandidateSimulatorInference':'recorded separately; a successful IPA build is not an inference result',
@@ -85,7 +92,7 @@ jobs:
       - name: Save device IPA separately from semantic test status
         uses: actions/upload-artifact@v4
         with:
-          name: PocketGemma-1.1.0-265-Device-Candidate
+          name: PocketGemma-1.1.0-266-Device-Candidate
           path: build/device-candidate
           if-no-files-found: error
           retention-days: 7
