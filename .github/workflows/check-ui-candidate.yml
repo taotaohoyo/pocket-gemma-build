@@ -6,12 +6,12 @@ on:
         description: Focused suite, accessibility guide or isolated scroll layout regression
         type: choice
         default: focused
-        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, settings-web-search, model-title, model-title-ipad, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, bloom, wording, tidy, launch-chat, config-sheet, languages, watch-languages, send-log, keyboard-settings, locked-model, new-models, settings-keyboard-open, unfold-row, redesign, flower, try-questions, tables, tables-probe, hw-keyboard, ipad-history, history-slide, voice, reply-modes, smart-mode, memory-history, table-stream, pc-link, claude, launch-stack, core, icon-glass]
+        options: [focused, access-guide, scroll-layout, bottom-follow, plus-motion, send-motion, jump-motion, history, island, markdown, charts, chart-reading, files, probe, orb, orb-video, composer, composer-lab, menu-video, jump-tuck, app-name, settings-open, web-search, settings-web-search, model-title, model-title-ipad, cellular-download, composer-type, keyboard-preview, text-size, settings-ui, settings-regression, settings-perf, watch, first-launch, bloom, wording, tidy, launch-chat, config-sheet, languages, watch-languages, send-log, keyboard-settings, locked-model, new-models, settings-keyboard-open, unfold-row, redesign, flower, try-questions, tables, tables-probe, hw-keyboard, ipad-history, history-slide, voice, reply-modes, smart-mode, memory-history, table-stream, pc-link, claude, launch-stack, core, icon-glass, icon-bake]
 permissions:
   contents: read
 jobs:
   ui-check:
-    if: inputs.scope != 'icon-glass'
+    if: inputs.scope != 'icon-glass' && inputs.scope != 'icon-bake'
     runs-on: macos-26
     timeout-minutes: 36
     defaults:
@@ -175,3 +175,15 @@ jobs:
       - name: Render the icon looks and show them on the home screen
         timeout-minutes: 26
         run: bash scripts/check-glass-icon.sh
+  # 1.1.0 (267): look A's iOS 26 render kept as plain layers, since iOS 27
+  # draws glass layers its own way (user's iPhone, 2026-11-12).
+  icon-bake:
+    if: inputs.scope == 'icon-bake'
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o PocketGemma-source.zip
+      - name: Bake look A's iOS 26 render into plain layers and check it
+        timeout-minutes: 15
+        run: bash scripts/bake-glass-icon.sh
