@@ -13,7 +13,7 @@ jobs:
   ui-check:
     if: inputs.scope != 'icon-glass' && inputs.scope != 'icon-bake'
     runs-on: macos-26
-    timeout-minutes: 36
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
@@ -43,7 +43,10 @@ jobs:
         # Separate boot480s, compile420s and tests600s watchdogs plus cleanup.
         # The previous19-minute step could kill tests before their own bound.
         # The composer scope (eighteen cases) needs up to about 19 minutes.
-        timeout-minutes: 32
+        # model-family (1.1.0 (279)) runs the phone's cases and then the
+        # iPad's, and runners that boot in 6.5 minutes and compile in over 7
+        # (run 43697790675) need more than 32: 46, the job 50.
+        timeout-minutes: 46
         env:
           UI_FOCUSED_ONLY: '1'
           UI_AX_GUIDE_ONLY: ${{ inputs.scope == 'access-guide' && '1' || '0' }}
