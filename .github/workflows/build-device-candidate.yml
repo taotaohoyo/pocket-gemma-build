@@ -97,6 +97,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      # The IPA alone, not zipped (Hachimoto さん, 2026-11-15): the artifact
+      # takes the file's name and downloads as the .ipa itself
+      # (upload-artifact v7, archive: false; one file only, name ignored).
+      - name: Save the IPA on its own, not zipped
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          path: build/device-candidate/PocketGemma-1.1.0-281.ipa
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
       - name: Preserve build logs on success or failure
         if: always()
         uses: actions/upload-artifact@v4
