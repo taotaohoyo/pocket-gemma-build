@@ -75,6 +75,9 @@ on:
           - context-e2b
           - chart-note-e2b
           - chart-note-e4b
+          - prewarm-e2b
+          - prewarm-switch
+          - prewarm-fallback
         default: ui-ux-regression
 permissions:
   contents: read
@@ -117,6 +120,9 @@ jobs:
     # five app languages on the CPU, at most 1150 seconds of the 1500.
     # chart-note-e2b / chart-note-e4b (1.1.0 (244)) ask for charts in new chats with the 243 note and
     # the app's (the language named), at most 1150 seconds of the 1500.
+    # prewarm-e2b / prewarm-switch / prewarm-fallback (1.1.0 (284), Issue #21) time E2B's first reply
+    # with and without the model loaded ahead, switch E2B and E4B quickly and send while one loads,
+    # and leave the load to the send on little room, a failed load and a stop; at most 1500 seconds.
     timeout-minutes: 65
     defaults:
       run:
