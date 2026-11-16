@@ -80,6 +80,7 @@ on:
           - prewarm-fallback
           - prewarm-history
           - prewarm-qwen
+          - prewarm-lfm3
         default: ui-ux-regression
 permissions:
   contents: read
@@ -129,6 +130,8 @@ jobs:
     # engine reused with each chat's own turns, another model switched to, quick switching, the
     # settings round trip, a load asked during a reply, heat and Low Power Mode; prewarm-qwen loads
     # Qwen3, Qwen2.5 and Qwen3.5 ahead (Qwen3.5 starts its own engine for another chat).
+    # prewarm-lfm3 (1.1.0 (289)) loads the LFM3 series ahead beside the real E2B, a double standing in
+    # for llama.cpp, which has no simulator slice (check-lfm3-prewarm.yml runs the real files on the Mac).
     timeout-minutes: 65
     defaults:
       run:
