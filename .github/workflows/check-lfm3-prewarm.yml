@@ -1,0 +1,107 @@
+name: Check the LFM3 series loaded ahead on llama.cpp for 1.1.0 (289)
+# 先行読み込み for LFM3 1.7B, LFM3-VL 2B and LFM3-Omni 2B (1.1.0 (289)):
+# the load the app starts ahead of the question (LlamaReply.load: the model,
+# then the projector), on the Mac's CPU and its Metal GPU, with the real
+# pinned files. Packages/PocketLlama's LFM3PrewarmTests measure each load's
+# time, memory (phys_footprint) and the address space it maps, a release,
+# loads over and over, a load stopped part-way, the first answer's time when
+# the send loads (as before 289), loaded ahead, sent while it loads, the same
+# engine for another chat, VL's photo and Omni's spoken question on an engine
+# loaded ahead, and one model after another (LFM3PREWARM lines). PocketCore's
+# tests (ModelPrewarm's gates) too.
+on:
+  push:
+    branches: [claude/project-thread-y152xv]
+    paths: ['.github/workflows/check-lfm3-prewarm.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lfm3-prewarm-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lfm3-prewarm:
+    runs-on: macos-26
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+    env:
+      LFM3_URL: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/bad5729bba61d076fff20d2548e62526665af215/LFM3-1.7B-QAD-Q4_0.gguf?download=true
+      LFM3_SHA: 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452
+      VL_REV: b36554cfd35854b06429900131730cd80f092cdb
+      VL_SHA: 621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6
+      VL_MMPROJ_SHA: c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab
+      OMNI_REV: 2918dd47cfceb4f260cd1734cd1aac1b22bbe4b6
+      OMNI_SHA: 6d2273a383b92dd7c5db0eb4c8dfeae13e805b485a6621c4b391ae179c2b5f28
+      OMNI_MMPROJ_SHA: 720ff4fc09df0e026c4ec641d0c698bf27b5bcd50561944c88eda5e3dffe1839
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: PocketCore tests
+        timeout-minutes: 15
+        run: |
+          mkdir -p build/lfm3-prewarm
+          status=0
+          swift test --package-path Packages/PocketCore > build/lfm3-prewarm/core-tests.log 2>&1 || status=$?
+          grep -E "error:|failed|Executed|ModelPrewarmTests" build/lfm3-prewarm/core-tests.log | head -80
+          exit $status
+      - name: The spoken question in macOS's Japanese voice
+        run: |
+          say -v '?' | grep -q '^Kyoko' || { echo "no Kyoko voice"; exit 1; }
+          say -v Kyoko -o "$RUNNER_TEMP/capital.aiff" "日本の首都はどこですか？"
+          afconvert -f WAVE -d LEI16@16000 -c 1 "$RUNNER_TEMP/capital.aiff" "$RUNNER_TEMP/capital.wav"
+          afinfo "$RUNNER_TEMP/capital.wav" | grep -E "duration|Data format" || true
+          echo "LFM3_OMNI_CAPITAL=$RUNNER_TEMP/capital.wav" >> "$GITHUB_ENV"
+          echo "LFM3_VL_PICTURE=$PWD/PocketGemma/Resources/vision-probe-square.jpg" >> "$GITHUB_ENV"
+      - name: Download the three models (and the projectors), as pinned in the app
+        run: |
+          set -euo pipefail
+          vl="https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/$VL_REV"
+          omni="https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/$OMNI_REV"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3.gguf" "$LFM3_URL" &
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/vl.gguf" "$vl/LFM3-VL-2B-QAD-Q4_0.gguf?download=true" &
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/vl-mmproj.gguf" "$vl/mmproj-LFM3-VL-2B-Q8_0.gguf?download=true" &
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni.gguf" "$omni/LFM3-Omni-2B-Q4_0.gguf?download=true" &
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/omni-mmproj.gguf" "$omni/mmproj-LFM3-Omni-2B-Q8_0.gguf?download=true" &
+          wait
+          shasum -a 256 -c <<EOF
+          $LFM3_SHA  $RUNNER_TEMP/lfm3.gguf
+          $VL_SHA  $RUNNER_TEMP/vl.gguf
+          $VL_MMPROJ_SHA  $RUNNER_TEMP/vl-mmproj.gguf
+          $OMNI_SHA  $RUNNER_TEMP/omni.gguf
+          $OMNI_MMPROJ_SHA  $RUNNER_TEMP/omni-mmproj.gguf
+          EOF
+          stat -f '%z %N' "$RUNNER_TEMP"/*.gguf
+          {
+            echo "LFM3_GGUF=$RUNNER_TEMP/lfm3.gguf"
+            echo "LFM3_VL_GGUF=$RUNNER_TEMP/vl.gguf"
+            echo "LFM3_VL_MMPROJ=$RUNNER_TEMP/vl-mmproj.gguf"
+            echo "LFM3_OMNI_GGUF=$RUNNER_TEMP/omni.gguf"
+            echo "LFM3_OMNI_MMPROJ=$RUNNER_TEMP/omni-mmproj.gguf"
+          } >> "$GITHUB_ENV"
+      - name: Loaded ahead on Metal (the app's GPU on screen)
+        timeout-minutes: 30
+        run: |
+          status=0
+          LLAMA_GPU=1 swift test --package-path Packages/PocketLlama --filter LFM3PrewarmTests > build/lfm3-prewarm/gpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3PREWARM|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-prewarm/gpu.log
+          grep -E "ggml_metal|MTL" build/lfm3-prewarm/gpu.log | sort | uniq -c | head -12
+          tail -5 build/lfm3-prewarm/gpu.log
+          exit $status
+      - name: Loaded on the CPU (the app's background)
+        if: always()
+        timeout-minutes: 40
+        run: |
+          status=0
+          swift test --package-path Packages/PocketLlama --filter LFM3PrewarmTests > build/lfm3-prewarm/cpu.log 2>&1 || status=$?
+          grep -E "error:|LFM3PREWARM|Test Case .* (passed|failed|skipped)|XCTAssert|Executed" build/lfm3-prewarm/cpu.log
+          tail -5 build/lfm3-prewarm/cpu.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LFM3-Prewarm-Check-Logs
+          path: build/lfm3-prewarm
+          retention-days: 7
