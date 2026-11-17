@@ -14,8 +14,16 @@ import PocketCore
 /// links that run out, broken connections and wrong bytes when asked. The
 /// harness asks the store what the app's buttons ask (download, 中止 keeping
 /// or deleting what came) and posts what the store shows and keeps on the
-/// phone once a second. Built twice: from 292's source (STORE_292) and
-/// from 293's.
+/// phone once a second. Built from 292's source (STORE_292), 293's and
+/// 294's.
+///
+/// The app closed from the app switcher (1.1.0 (294)), which the simulator
+/// can't do: `switcher-quit` posts iOS's willTerminate as iOS does for an
+/// app it is running, stops the store's task keeping its resume data as iOS
+/// does then, and ends the app; the next launch hands the store that end as
+/// iOS does, NSURLErrorCancelledReasonUserForceQuitApplication with the
+/// resume data (`QuitEnd`). run-harness.sh opens the store's session, task
+/// tags and systemStopped to the harness for it.
 @main
 struct HarnessApp: App {
     @UIApplicationDelegateAdaptor(HarnessDelegate.self) private var delegate
@@ -88,6 +96,9 @@ final class Harness {
         started = true
         let launch = UIApplication.shared.applicationState == .background ? "launched-in-background" : "launched"
         event(launch, detail: "pid \(ProcessInfo.processInfo.processIdentifier)")
+        #if !STORE_292
+        handOverQuitEnd()
+        #endif
         for name in [UIApplication.didEnterBackgroundNotification, UIApplication.willEnterForegroundNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
                 MainActor.assumeIsolated { Harness.shared.event(note.name == UIApplication.didEnterBackgroundNotification ? "background" : "foreground") }
@@ -143,10 +154,93 @@ final class Harness {
             store.discardKept(Self.spec)
             #endif
         case "clear-error": store.error = nil
+        #if !STORE_292
+        // On screen or kept running by the continued task: willTerminate.
+        case "switcher-quit": quit(willTerminate: true, keepsData: true, deliversEnd: true, whileRestoring: false)
+        // Suspended: no willTerminate; iOS's end comes as the tasks are read.
+        case "switcher-quit-suspended": quit(willTerminate: false, keepsData: true, deliversEnd: true, whileRestoring: true)
+        // The task left no resume data (the app received it itself).
+        case "switcher-quit-no-data": quit(willTerminate: true, keepsData: false, deliversEnd: false, whileRestoring: false)
+        // iOS ending an app it runs: willTerminate, and its task goes on.
+        case "terminate-task-alive":
+            NotificationCenter.default.post(name: UIApplication.willTerminateNotification, object: UIApplication.shared)
+            event("ended", detail: "task left running")
+            Task { try? await Task.sleep(for: .milliseconds(700)); exit(0) }
+        #endif
         default: break
         }
         event("ran", detail: name)
     }
+
+    #if !STORE_292
+    /// iOS's end of the store's task when the person closes the app from
+    /// the app switcher, kept for the next launch to hand over.
+    struct QuitEnd: Codable {
+        var key: String
+        var received: Int64
+        var data: Data?
+        var whileRestoring: Bool
+
+        static var url: URL {
+            FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("harness-quit-end.json")
+        }
+        static func take() -> QuitEnd? {
+            defer { try? FileManager.default.removeItem(at: url) }
+            return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(QuitEnd.self, from: $0) }
+        }
+    }
+
+    private func quit(willTerminate: Bool, keepsData: Bool, deliversEnd: Bool, whileRestoring: Bool) {
+        let store = ModelStore.shared
+        if willTerminate {
+            NotificationCenter.default.post(name: UIApplication.willTerminateNotification, object: UIApplication.shared)
+        }
+        let session = store.session
+        session.getAllTasks { tasks in
+            let task = tasks.first { $0.state == .running && $0.taskDescription == Self.spec.id } as? URLSessionDownloadTask
+            Task { @MainActor in
+                guard let task else {
+                    self.event("quit", detail: "no task")
+                    try? await Task.sleep(for: .milliseconds(700))
+                    exit(0)
+                }
+                // The store's own end of the task is not its stop.
+                let key = "bg-\(task.taskIdentifier)"
+                store.restartedTasks.insert(key)
+                let received = task.countOfBytesReceived
+                let ended: @Sendable (Data?) -> Void = { data in
+                    Task { @MainActor in
+                        if deliversEnd, let encoded = try? JSONEncoder().encode(QuitEnd(key: key, received: received, data: data, whileRestoring: whileRestoring)) {
+                            try? encoded.write(to: QuitEnd.url, options: .atomic)
+                        }
+                        self.event("quit", detail: "\(key) received \(received) resume data \(data?.count ?? 0)")
+                        try? await Task.sleep(for: .milliseconds(700))
+                        exit(0)
+                    }
+                }
+                if keepsData { task.cancel(byProducingResumeData: ended) } else { task.cancel(); ended(nil) }
+            }
+        }
+    }
+
+    /// The next launch: iOS's end of the task, as iOS hands it over, while
+    /// the tasks are read or just after (on the phone, 292's record of
+    /// 2026-11-17: in the launch's second, after them).
+    private func handOverQuitEnd() {
+        guard let end = QuitEnd.take() else { return }
+        let deliver = {
+            ModelStore.shared.systemStopped(Self.spec, reason: NSURLErrorCancelledReasonUserForceQuitApplication,
+                                            identifier: end.key, resumeData: end.data, received: end.received)
+            self.event("quit-end-delivered", detail: "\(end.key) \(end.whileRestoring ? "while restoring" : "after restoring") resume data \(end.data?.count ?? 0)")
+        }
+        if end.whileRestoring { deliver(); return }
+        Task {
+            while ModelStore.shared.isRestoring { try? await Task.sleep(for: .milliseconds(100)) }
+            try? await Task.sleep(for: .milliseconds(300))
+            deliver()
+        }
+    }
+    #endif
 
     private func orNull<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
 

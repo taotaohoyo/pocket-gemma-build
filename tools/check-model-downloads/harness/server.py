@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The app's model download in the iOS simulator, step by step (1.1.0 (293)).
+"""The app's model download in the iOS simulator, step by step (1.1.0 (293);
+the app closed from the app switcher, 294).
 
 A stand-in for the Hugging Face Hub on 127.0.0.1 and the scenarios that use
 it. The Hub's resolve link answers 302 to a CDN link of its own, as the Hub
@@ -14,7 +15,7 @@ and keeps. Each scenario starts from a fresh install, moves the app with
 simctl (to the background: the Settings app opens; back: the app opens;
 ended: simctl terminate) and prints one HARNESS-RESULT line of JSON.
 
-usage: server.py --udid UDID --bundle ID --file PATH --variant 292|293 --out DIR [--only NAME,...]
+usage: server.py --udid UDID --bundle ID --file PATH --variant 292|293|294 --out DIR [--only NAME,...]
 """
 import argparse
 import email.utils
@@ -554,7 +555,80 @@ def scenario_wrong_bytes(s):
     s.installed(240)
 
 
+def quit_and_reopen(s, how, at=0.35):
+    """The app closed from the app switcher midway (1.1.0 (294)): the
+    harness app stops its task as iOS does and ends; opened again 3 s later
+    it gets iOS's end of the task. 294 waits for 続きから (Hachimoto さん's
+    choice of 2026-11-17); 293 went on by itself, from a launch iOS had not
+    begun from a tap."""
+    s.start()
+    s.command('download')
+    s.wait('%d%%' % (at * 100), lambda: s.fraction() >= at, 120)
+    s.command(how)
+    s.wait('the app ended', lambda: any(e['name'] in ('quit', 'ended') for e in s.hub.events), 20)
+    time.sleep(2)
+    s.sim.terminate()
+    quit_at = s.hub.position()
+    s.checks['closed_at_mb'] = round(quit_at / MB, 1)
+    closed = time.time()
+    time.sleep(3)
+    with s.hub.lock:
+        lines_before = len(s.hub.log)
+    s.sim.launch(s.server)
+    s.mark('opened again')
+    s.launched()
+    # Past the wait for iOS's word (3 s) and for the resume data (10 s).
+    time.sleep(13)
+    status, _ = s.status()
+    with s.hub.lock:
+        lines = s.hub.log[lines_before:]
+    s.checks['after_reopen'] = {k: status.get(k) for k in ('downloading', 'kept', 'kept_progress', 'status_text', 'resume_bytes', 'record')}
+    s.checks['requests_after_close'] = len([r for r in s.cdn_requests() if r['t'] > closed])
+    s.checks['mb_after_close'] = round((s.hub.position() - quit_at) / MB, 1)
+    s.checks['went_on_by_itself'] = status.get('downloading') is not None or status.get('installed') is True \
+        or s.checks['requests_after_close'] > 0
+    s.checks['reopen_record'] = [l for l in lines if any(w in l for w in (
+        '閉じる', '前回のダウンロード', 'iOSがタスクを止めた', '一時停止', '続きから', 'タスクが見つからない', '続きのデータ'))][:12]
+    if s.checks['went_on_by_itself']:
+        s.installed(240)
+        return
+    t = time.time()
+    s.command('download')
+    s.mark('続きから')
+    s.wait('a new request', lambda: first_start_after(s, t) is not None, 60)
+    s.checks['next_start_mb'] = round((first_start_after(s, t) or 0) / MB, 1)
+    s.installed(240)
+
+
+def scenario_switcher_quit(s):
+    """Closed from the app switcher at 35% while the app runs (willTerminate),
+    opened again: iOS's end of the task comes just after the tasks are read."""
+    quit_and_reopen(s, 'switcher-quit')
+
+
+def scenario_switcher_quit_suspended(s):
+    """Closed from the app switcher at 35% while suspended (no willTerminate),
+    opened again: iOS's end comes while the tasks are read."""
+    quit_and_reopen(s, 'switcher-quit-suspended')
+
+
+def scenario_switcher_quit_no_data(s):
+    """Closed at 35% with no resume data and no end from iOS (a file the
+    app received itself): nothing to go on from, the next try from 0."""
+    quit_and_reopen(s, 'switcher-quit-no-data')
+
+
+def scenario_terminate_task_alive(s):
+    """iOS ending the app it runs at 35% (willTerminate) while its task goes
+    on: opened again, the download is followed to the end, not paused."""
+    quit_and_reopen(s, 'terminate-task-alive')
+
+
 SCENARIOS = {
+    'switcher-quit': scenario_switcher_quit,
+    'switcher-quit-suspended': scenario_switcher_quit_suspended,
+    'switcher-quit-no-data': scenario_switcher_quit_no_data,
+    'terminate-task-alive': scenario_terminate_task_alive,
     'background': scenario_background,
     'background-slow': scenario_background_slow,
     'drop': scenario_drop,

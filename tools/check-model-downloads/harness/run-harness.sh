@@ -4,7 +4,8 @@
 # simulator, against server.py's stand-in for the Hub (1.1.0 (293)).
 # Run on macOS from the repository root.
 # Usage: tools/check-model-downloads/harness/run-harness.sh VARIANT SOURCE_ZIP [SCENARIO,...]
-#   VARIANT 292 builds the store as 292 had it (Harness.swift's STORE_292).
+#   VARIANT 292 builds the store as 292 had it (Harness.swift's STORE_292);
+#   293 and 294 as they are, the app's closing from the app switcher too.
 set -euo pipefail
 variant="$1"
 zip="$2"
@@ -25,6 +26,17 @@ for file in PocketGemma/Services/ModelStore.swift PocketGemma/Services/DownloadA
 done
 sed -i '' 's/ModelDownload\.request(for: spec, cellular: allowsCellular)/HarnessRequest.request(for: spec, cellular: allowsCellular)/' "$work/app/ModelStore.swift"
 grep -q 'HarnessRequest.request(for: spec' "$work/app/ModelStore.swift" || { echo 'HARNESS-ERROR the store request was not found'; exit 1; }
+# The app closed from the app switcher (1.1.0 (294)): the harness stops the
+# store's task as iOS does and hands its end to the next launch, through
+# the store's session, its task tags and systemStopped.
+if [ "$variant" != 292 ]; then
+  sed -i '' -e 's/private lazy var session: URLSession = {/lazy var session: URLSession = {/' \
+    -e 's/private var restartedTasks: Set<String>/var restartedTasks: Set<String>/' \
+    -e 's/private func systemStopped(/func systemStopped(/' "$work/app/ModelStore.swift"
+  for opened in 'lazy var session: URLSession = {' 'var restartedTasks: Set<String>' 'func systemStopped('; do
+    grep -q "^    $opened" "$work/app/ModelStore.swift" || { echo "HARNESS-ERROR not opened: $opened"; exit 1; }
+  done
+fi
 cp "$here/Harness.swift" "$here/Stubs.swift" "$work/app/"
 flags='$(inherited)'
 [ "$variant" = 292 ] && flags='$(inherited) -DSTORE_292'

@@ -1,11 +1,12 @@
-name: Model download in the simulator, 292 against 293
+name: Model download in the simulator, 293 against 294
 # The app's own model download (ModelStore, DownloadActivity, AppFiles and
 # the download record from PocketGemma-source.zip) in the iOS simulator,
 # against a stand-in for the Hub on the runner that serves the real Qwen3
 # 0.6B file with byte ranges, redirects, links that run out, broken
 # connections and wrong bytes (tools/check-model-downloads/harness,
 # 1.1.0 (293), Hachimoto さん's directive of 2026-11-17). The same steps for
-# 292 (f5b215b, as handed over) and for this branch.
+# 292 (f5b215b), 293 (f71975a, as handed over) and this branch (294: the
+# app closed from the app switcher waits for 続きから).
 on:
   # A new workflow can't be dispatched until it is on main: a push whose
   # message says [harness] runs it from this branch.
@@ -15,13 +16,13 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: Scenarios to run, comma separated (empty runs all)
+        description: Scenarios to run, comma separated (empty runs 294's set)
         type: string
         default: ''
       variants:
         description: Which builds (JSON list)
         type: string
-        default: '["292", "293"]'
+        default: '["293", "294"]'
 permissions:
   contents: read
 jobs:
@@ -32,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.variants || '["292", "293"]') }}
+        variant: ${{ fromJSON(inputs.variants || '["293", "294"]') }}
     name: harness ${{ matrix.variant }}
     defaults:
       run:
@@ -47,13 +48,17 @@ jobs:
           mkdir -p build/Harness
           if [ "${{ matrix.variant }}" = 292 ]; then
             git show f5b215b:PocketGemma-source.zip > build/Harness/source.zip
+          elif [ "${{ matrix.variant }}" = 293 ]; then
+            git show f71975a:PocketGemma-source.zip > build/Harness/source.zip
           else
             cp PocketGemma-source.zip build/Harness/source.zip
           fi
           shasum -a 256 build/Harness/source.zip
       - name: Download scenarios
         timeout-minutes: 65
-        run: bash tools/check-model-downloads/harness/run-harness.sh "${{ matrix.variant }}" build/Harness/source.zip "${{ inputs.scenarios }}"
+        # 294's set: the app closed from the app switcher three ways, iOS
+        # ending the app with its task going on, and 293's relaunch steps.
+        run: bash tools/check-model-downloads/harness/run-harness.sh "${{ matrix.variant }}" build/Harness/source.zip "${{ inputs.scenarios || 'switcher-quit,switcher-quit-suspended,switcher-quit-no-data,terminate-task-alive,kill,stop-keep-relaunch,stop-keep' }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
