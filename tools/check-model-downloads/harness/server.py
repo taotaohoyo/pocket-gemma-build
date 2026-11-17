@@ -47,8 +47,10 @@ class Hub:
         self.fail_next = None
         self.drop_now = False
         self.corrupt = None
+        self.hold = False
         self.requests = []
         self.commands = []
+        self.command_id = 0
         self.status = {}
         self.status_time = 0.0
         self.events = []
@@ -77,7 +79,12 @@ class Hub:
             self.fail_next = None
             self.drop_now = False
             self.corrupt = None
+            self.hold = False
             self.requests = []
+            # Each scenario's commands alone: a fresh install asks from 0
+            # (until run 44029521508 it ran every earlier scenario's again).
+            # Their numbers go on, for the app's last one is kept.
+            self.commands = []
             self.events = []
             self.log = []
             self.status = {}
@@ -139,6 +146,8 @@ def handler_for(hub):
             if_range = self.headers.get('If-Range')
             entry = hub.note({'kind': 'cdn', 'token': token, 'range': header, 'if_range': if_range, 'sent': 0})
             with hub.lock:
+                # A new request lets go of the one held (it was given up).
+                hub.hold = False
                 expired = token <= hub.expired_upto
                 fail = hub.fail_next
                 if fail and not expired:
@@ -230,6 +239,9 @@ def handler_for(hub):
                         if pause <= 0 or hub.drop_now:
                             break
                         time.sleep(min(pause, 0.25))
+                    # Held: the connection stays open with nothing on it.
+                    while hub.hold and not hub.drop_now:
+                        time.sleep(0.25)
             entry['ended'] = 'complete'
 
     return Handler
@@ -282,7 +294,8 @@ class Scenario:
 
     def command(self, name):
         with self.hub.lock:
-            self.hub.commands.append({'id': len(self.hub.commands) + 1, 'name': name})
+            self.hub.command_id += 1
+            self.hub.commands.append({'id': self.hub.command_id, 'name': name})
         self.mark('command ' + name)
 
     def status(self):
@@ -413,6 +426,25 @@ def scenario_drop_then_error(s):
     s.installed(240)
 
 
+def scenario_stall_then_error(s):
+    """No bytes after 30% (the connection stays open): after 45 s on screen
+    the app's stall watch starts the task again from what came (resume
+    data), and the Hub answers that request once with HTTP 503. 292 deleted
+    the data as the new task took it, and began the file again from 0."""
+    s.start()
+    s.command('download')
+    s.wait('30%', lambda: s.fraction() >= 0.30, 120)
+    at = s.hub.position()
+    s.hub.fail_next = 503
+    s.hub.hold = True
+    s.mark('bytes held, the next answer 503')
+    s.wait('a request after the hold', lambda: len(s.cdn_requests()) >= 2, 120)
+    s.checks['held_at_mb'] = round(at / MB, 1)
+    s.installed(240)
+    starts = [r.get('start') for r in s.cdn_requests() if r.get('status') in (200, 206)]
+    s.checks['starts_mb'] = [round((x or 0) / MB, 1) for x in starts]
+
+
 def scenario_kill(s):
     """The app ended by the system (simctl terminate) at 30%, opened again 10 s later."""
     s.start()
@@ -527,6 +559,7 @@ SCENARIOS = {
     'background-slow': scenario_background_slow,
     'drop': scenario_drop,
     'drop-then-503': scenario_drop_then_error,
+    'stall-then-503': scenario_stall_then_error,
     'kill': scenario_kill,
     'stop-keep': scenario_stop_keep,
     'stop-keep-relaunch': scenario_stop_keep_relaunch,

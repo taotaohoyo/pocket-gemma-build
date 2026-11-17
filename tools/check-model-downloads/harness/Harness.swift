@@ -73,7 +73,9 @@ final class Harness {
     static let shared = Harness()
     static let spec = ModelSpec.qwen3
     private var started = false
-    private var lastCommand = 0
+    /// Kept across launches: a relaunch in a scenario must not run its
+    /// commands again (until run 44029521508 it did).
+    private var lastCommand = UserDefaults.standard.integer(forKey: "harness-last-command")
     private var postedLines = 0
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -113,6 +115,7 @@ final class Harness {
                 for command in commands {
                     guard let id = command["id"] as? Int, id > self.lastCommand, let name = command["name"] as? String else { continue }
                     self.lastCommand = id
+                    UserDefaults.standard.set(id, forKey: "harness-last-command")
                     self.run(name)
                 }
             }
