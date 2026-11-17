@@ -5,7 +5,7 @@
 # Run on macOS from the repository root.
 # Usage: tools/check-model-downloads/harness/run-harness.sh VARIANT SOURCE_ZIP [SCENARIO,...]
 #   VARIANT 292 builds the store as 292 had it (Harness.swift's STORE_292);
-#   293 and 294 as they are, the app's closing from the app switcher too.
+#   293, 294 and 295 as they are, the app's closing from the app switcher too.
 set -euo pipefail
 variant="$1"
 zip="$2"

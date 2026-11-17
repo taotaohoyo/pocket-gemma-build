@@ -1,12 +1,13 @@
-name: Model download in the simulator, 293 against 294
+name: Model download in the simulator, 294 against 295
 # The app's own model download (ModelStore, DownloadActivity, AppFiles and
 # the download record from PocketGemma-source.zip) in the iOS simulator,
 # against a stand-in for the Hub on the runner that serves the real Qwen3
 # 0.6B file with byte ranges, redirects, links that run out, broken
 # connections and wrong bytes (tools/check-model-downloads/harness,
 # 1.1.0 (293), Hachimoto さん's directive of 2026-11-17). The same steps for
-# 292 (f5b215b), 293 (f71975a, as handed over) and this branch (294: the
-# app closed from the app switcher waits for 続きから).
+# 292 (f5b215b), 293 (f71975a), 294 (43b9959, as handed over: the app
+# closed from the app switcher waits for 続きから) and this branch (295: the
+# continued task's end retitled, its speed, heat and memory in the record).
 on:
   # A new workflow can't be dispatched until it is on main: a push whose
   # message says [harness] runs it from this branch.
@@ -16,13 +17,13 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: Scenarios to run, comma separated (empty runs 294's set)
+        description: Scenarios to run, comma separated (empty runs 294's set, which 295 keeps)
         type: string
         default: ''
       variants:
         description: Which builds (JSON list)
         type: string
-        default: '["293", "294"]'
+        default: '["294", "295"]'
 permissions:
   contents: read
 jobs:
@@ -33,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.variants || '["293", "294"]') }}
+        variant: ${{ fromJSON(inputs.variants || '["294", "295"]') }}
     name: harness ${{ matrix.variant }}
     defaults:
       run:
@@ -50,6 +51,8 @@ jobs:
             git show f5b215b:PocketGemma-source.zip > build/Harness/source.zip
           elif [ "${{ matrix.variant }}" = 293 ]; then
             git show f71975a:PocketGemma-source.zip > build/Harness/source.zip
+          elif [ "${{ matrix.variant }}" = 294 ]; then
+            git show 43b9959:PocketGemma-source.zip > build/Harness/source.zip
           else
             cp PocketGemma-source.zip build/Harness/source.zip
           fi

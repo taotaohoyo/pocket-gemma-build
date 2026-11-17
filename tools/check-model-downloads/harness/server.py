@@ -15,7 +15,7 @@ and keeps. Each scenario starts from a fresh install, moves the app with
 simctl (to the background: the Settings app opens; back: the app opens;
 ended: simctl terminate) and prints one HARNESS-RESULT line of JSON.
 
-usage: server.py --udid UDID --bundle ID --file PATH --variant 292|293|294 --out DIR [--only NAME,...]
+usage: server.py --udid UDID --bundle ID --file PATH --variant 292|293|294|295 --out DIR [--only NAME,...]
 """
 import argparse
 import email.utils
