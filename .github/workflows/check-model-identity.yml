@@ -18,7 +18,7 @@ concurrency:
 jobs:
   lfm3:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 55
     defaults:
       run:
         shell: bash
@@ -43,13 +43,13 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3.gguf" "$LFM3_URL"
           echo "$LFM3_SHA  $RUNNER_TEMP/lfm3.gguf" | shasum -a 256 -c
       - name: LFM3 says who it is (CPU)
-        timeout-minutes: 25
+        timeout-minutes: 35
+        # Each answer is printed as it comes: the first run (44148647461) kept
+        # them in a file and showed none when the step ran out of time.
         run: |
-          status=0
-          LFM3_GGUF="$RUNNER_TEMP/lfm3.gguf" swift test --package-path Packages/PocketLlama --filter LFM3IdentityTests > build/identity/lfm3.log 2>&1 || status=$?
-          grep -E "error:|LFM3-IDENTITY|Test Case .* (passed|failed)|XCTAssert|Executed" build/identity/lfm3.log | head -260
-          tail -5 build/identity/lfm3.log
-          exit $status
+          LFM3_GGUF="$RUNNER_TEMP/lfm3.gguf" swift test --package-path Packages/PocketLlama --filter LFM3IdentityTests 2>&1 \
+            | tee build/identity/lfm3.log \
+            | grep --line-buffered -E "error:|LFM3-IDENTITY|Test Case .* (started|passed|failed)|XCTAssert|Executed|Compiling|Build complete"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
