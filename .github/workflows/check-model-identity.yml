@@ -1,0 +1,58 @@
+name: Check who each model says it is for 1.1.0 (296)
+# The user's directive of 2026-11-17 「Smart Memory｜モデル自己認識の混同・誤回答修正」.
+# PocketCore's tests (the system turn's identity, the questions Smart Memory
+# leaves to the model, the note's authorship), then LFM3 1.7B's real file
+# through the app's own path on the Mac's CPU: the 295 way (the report) and
+# the 296 way, LFM3-IDENTITY lines carrying each answer. Gemma and Qwen are
+# asked on the simulator by check-runtime-smoke.yml's model-identity probe.
+on:
+  push:
+    branches: [claude/project-thread-2qofao]
+    paths: ['PocketGemma-source.zip', '.github/workflows/check-model-identity.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: model-identity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lfm3:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      LFM3_URL: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/bad5729bba61d076fff20d2548e62526665af215/LFM3-1.7B-QAD-Q4_0.gguf?download=true
+      LFM3_SHA: 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -o -q PocketGemma-source.zip
+      - run: xcodebuild -version; sysctl -n hw.memsize hw.ncpu machdep.cpu.brand_string
+      - name: PocketCore tests
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/identity
+          status=0
+          swift test --package-path Packages/PocketCore > build/identity/core-tests.log 2>&1 || status=$?
+          grep -E "error:|failed|ModelIdentityTests|SmartMemory.*(passed|failed)|SMART-MEMORY|Executed" build/identity/core-tests.log | head -160
+          tail -5 build/identity/core-tests.log
+          exit $status
+      - name: Download LFM3 1.7B (QAD Q4_0)
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lfm3.gguf" "$LFM3_URL"
+          echo "$LFM3_SHA  $RUNNER_TEMP/lfm3.gguf" | shasum -a 256 -c
+      - name: LFM3 says who it is (CPU)
+        timeout-minutes: 25
+        run: |
+          status=0
+          LFM3_GGUF="$RUNNER_TEMP/lfm3.gguf" swift test --package-path Packages/PocketLlama --filter LFM3IdentityTests > build/identity/lfm3.log 2>&1 || status=$?
+          grep -E "error:|LFM3-IDENTITY|Test Case .* (passed|failed)|XCTAssert|Executed" build/identity/lfm3.log | head -260
+          tail -5 build/identity/lfm3.log
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Model-Identity-Logs
+          path: build/identity
+          retention-days: 14

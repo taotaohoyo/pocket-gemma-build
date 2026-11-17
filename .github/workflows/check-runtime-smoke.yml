@@ -72,6 +72,7 @@ on:
           - search-recorded-e4b
           - try-questions-e2b
           - smart-memory-e2b
+          - model-identity
           - context-e2b
           - chart-note-e2b
           - chart-note-e4b
@@ -117,6 +118,9 @@ jobs:
     # Tavily found on 2026-10-27, kept in the test, for runs without the secret.
     # smart-memory-e2b (1.1.0 (251)) gives E2B earlier chats as Smart Memory does, at most 1150
     # seconds of the 1500.
+    # model-identity (1.1.0 (296)) has E2B and Qwen2.5 answer who they are with another model's
+    # introduction as Smart Memory's record and as the chat's earlier turn, the 295 way and the
+    # 296 way, on the CPU; at most 1500 seconds of the 1800.
     # context-e2b (1.1.0 (256)) gives E2B the same long chats the 255 way and the 256 way, with the
     # real token counts, at most 1300 seconds of the 1500.
     # try-questions-e2b (1.1.0 (219)) asks E2B the empty chat's three try questions in the
