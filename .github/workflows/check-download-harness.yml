@@ -1,0 +1,65 @@
+name: Model download in the simulator, 292 against 293
+# The app's own model download (ModelStore, DownloadActivity, AppFiles and
+# the download record from PocketGemma-source.zip) in the iOS simulator,
+# against a stand-in for the Hub on the runner that serves the real Qwen3
+# 0.6B file with byte ranges, redirects, links that run out, broken
+# connections and wrong bytes (tools/check-model-downloads/harness,
+# 1.1.0 (293), Hachimoto さん's directive of 2026-11-17). The same steps for
+# 292 (f5b215b, as handed over) and for this branch.
+on:
+  # A new workflow can't be dispatched until it is on main: a push whose
+  # message says [harness] runs it from this branch.
+  push:
+    branches: [claude/project-thread-ajdend]
+    paths: ['.github/workflows/check-download-harness.yml', 'tools/check-model-downloads/harness/**', 'PocketGemma-source.zip']
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Scenarios to run, comma separated (empty runs all)
+        type: string
+        default: ''
+      variants:
+        description: Which builds (JSON list)
+        type: string
+        default: '["292", "293"]'
+permissions:
+  contents: read
+jobs:
+  harness:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[harness]') }}
+    runs-on: macos-26
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(inputs.variants || '["292", "293"]') }}
+    name: harness ${{ matrix.variant }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: brew install xcodegen
+      - name: The source
+        run: |
+          mkdir -p build/Harness
+          if [ "${{ matrix.variant }}" = 292 ]; then
+            git show f5b215b:PocketGemma-source.zip > build/Harness/source.zip
+          else
+            cp PocketGemma-source.zip build/Harness/source.zip
+          fi
+          shasum -a 256 build/Harness/source.zip
+      - name: Download scenarios
+        timeout-minutes: 65
+        run: bash tools/check-model-downloads/harness/run-harness.sh "${{ matrix.variant }}" build/Harness/source.zip "${{ inputs.scenarios }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Download-Harness-${{ matrix.variant }}
+          path: |
+            build/Harness/${{ matrix.variant }}/out
+            build/Harness/${{ matrix.variant }}/compile.log
+            build/Harness/${{ matrix.variant }}/project.yml
+          retention-days: 14
