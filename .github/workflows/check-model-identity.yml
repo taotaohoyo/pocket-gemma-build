@@ -1,7 +1,8 @@
 name: Check who each model says it is for 1.1.0 (296)
 # The user's directive of 2026-11-17 「Smart Memory｜モデル自己認識の混同・誤回答修正」.
-# PocketCore's tests (the system turn's identity, the questions Smart Memory
-# leaves to the model, the note's authorship), then LFM3 1.7B's real file
+# PocketCore's tests (the questions Smart Memory leaves to the model, the
+# introductions it recalls only for a question about before, the note's
+# authorship), then LFM3 1.7B's real file
 # through the app's own path on the Mac's CPU: the 295 way (the report) and
 # the 296 way, LFM3-IDENTITY lines carrying each answer. Gemma and Qwen are
 # asked on the simulator by check-runtime-smoke.yml's model-identity probe.
@@ -25,10 +26,7 @@ jobs:
     env:
       LFM3_URL: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/bad5729bba61d076fff20d2548e62526665af215/LFM3-1.7B-QAD-Q4_0.gguf?download=true
       LFM3_SHA: 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452
-      # The wordings side by side (recorded, not required), while the note's
-      # words are being chosen; LFM3IdentityTests alone runs the checks.
-      IDENTITY_FILTER: LFM3IdentityTests/testWordingsAreCompared
-      LFM3_IDENTITY_WORDINGS: '1'
+      IDENTITY_FILTER: LFM3IdentityTests
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o -q PocketGemma-source.zip
