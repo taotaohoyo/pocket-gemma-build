@@ -20,18 +20,13 @@ jobs:
   lfm3:
     runs-on: macos-26
     timeout-minutes: 55
-    strategy:
-      fail-fast: false
-      matrix:
-        part: ['1', '2', '3', '4']
     defaults:
       run:
         shell: bash
     env:
       LFM3_URL: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/bad5729bba61d076fff20d2548e62526665af215/LFM3-1.7B-QAD-Q4_0.gguf?download=true
       LFM3_SHA: 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452
-      IDENTITY_FILTER: LFM3IdentityTests/testWaysToAnswerAboutTheEarlierAssistantAreRecorded
-      LFM3_IDENTITY_WAYS: ${{ matrix.part }}
+      IDENTITY_FILTER: LFM3IdentityTests
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o -q PocketGemma-source.zip
@@ -60,6 +55,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Model-Identity-Logs-${{ matrix.part }}
+          name: Model-Identity-Logs
           path: build/identity
           retention-days: 14
