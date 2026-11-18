@@ -73,6 +73,7 @@ on:
           - try-questions-e2b
           - smart-memory-e2b
           - model-identity
+          - qwen-identity
           - context-e2b
           - chart-note-e2b
           - chart-note-e4b
@@ -121,6 +122,8 @@ jobs:
     # model-identity (1.1.0 (296)) has E2B and Qwen2.5 answer who they are with another model's
     # introduction as Smart Memory's record and as the chat's earlier turn, the 295 way and the
     # 296 way, on the CPU; at most 1500 seconds of the 1800.
+    # qwen-identity (1.1.0 (296)) asks Qwen2.5 1.5B and Qwen3 0.6B who they are with the app's system
+    # turn and with Qwen's own opening sentence before it; recorded, not required.
     # context-e2b (1.1.0 (256)) gives E2B the same long chats the 255 way and the 256 way, with the
     # real token counts, at most 1300 seconds of the 1500.
     # try-questions-e2b (1.1.0 (219)) asks E2B the empty chat's three try questions in the
